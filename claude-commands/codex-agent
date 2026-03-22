@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  codex-agent -n|--new <prompt...>
+  codex-agent -c|--continue <session_id> <prompt...>
+
+Examples:
+  codex-agent -n "Write a bash script that..."
+  codex-agent -c 01234567-89ab-cdef-0123-456789abcdef "Continue with..."
+EOF
+}
+
+
+# --config mcp_servers.context7.enabled=false
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ $# -lt 2 ]]; then
+  usage >&2
+  exit 2
+fi
+
+mode="$1"
+shift
+
+case "$mode" in
+  -n|--new)
+    prompt="$*"
+    if [[ -z "${prompt// }" ]]; then
+      echo "codex-agent: missing prompt" >&2
+      usage >&2
+      exit 2
+    fi
+    exec codex --yolo --profile agent exec -- "$prompt"
+    ;;
+  -c|--continue)
+    if [[ $# -lt 2 ]]; then
+      echo "codex-agent: missing session id and/or prompt" >&2
+      usage >&2
+      exit 2
+    fi
+    session_id="$1"
+    shift
+    prompt="$*"
+    if [[ -z "${prompt// }" ]]; then
+      echo "codex-agent: missing prompt" >&2
+      usage >&2
+      exit 2
+    fi
+    exec codex --yolo --profile agent exec resume "$session_id" -- "$prompt"
+    ;;
+  *)
+    echo "codex-agent: unknown option: $mode" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

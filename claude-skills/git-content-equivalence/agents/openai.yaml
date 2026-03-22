@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Content Equivalence"
+  short_description: "Guide patch-equivalent Git history reconciliation"
+  default_prompt: "Use $git-content-equivalence to compare rewritten Git history by content instead of commit ancestry."

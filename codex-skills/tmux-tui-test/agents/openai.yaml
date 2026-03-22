@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tmux TUI Test"
+  short_description: "Launch and inspect TUIs through tmux"
+  default_prompt: "Use $tmux-tui-test to launch this TUI in tmux, interact with it, and capture the screen state for debugging."
