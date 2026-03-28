@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ask Mode"
+  short_description: "Answer questions without making changes"
+  default_prompt: "Use $ask-mode to answer questions, inspect context, and avoid edits or other state-changing actions unless the user clearly approves them."
