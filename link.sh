@@ -13,6 +13,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")" && pwd)"
 DRY=false
 UNLINK=false
+BACKUP_DIR="$REPO/.backups/$(date +%Y%m%d-%H%M%S)"
 
 for arg in "$@"; do
   case "$arg" in
@@ -53,9 +54,8 @@ do_link() {
 
   # If dest exists and is NOT a symlink, back it up.
   if [[ -e "$dest" ]] && [[ ! -L "$dest" ]]; then
-    local backup="${dest}.bak.$(date +%s)"
-    echo "backup $dest -> $backup"
-    $DRY || mv "$dest" "$backup"
+    echo "backup $dest -> $BACKUP_DIR/$(basename "$dest")"
+    $DRY || { mkdir -p "$BACKUP_DIR"; mv "$dest" "$BACKUP_DIR/"; }
   elif [[ -L "$dest" ]]; then
     # Symlink exists but points elsewhere — remove it.
     echo "relink $dest"

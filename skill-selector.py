@@ -19,6 +19,7 @@ from textual.widgets.selection_list import Selection
 
 
 REPO = Path(__file__).resolve().parent
+BACKUP_DIR = REPO / ".backups"
 
 CATEGORIES = [
     ("Claude Skills", "claude-skills", Path.home() / ".claude" / "skills"),
@@ -94,8 +95,10 @@ def apply_link(category: str, name: str, dest_dir: Path) -> None:
             return
         dest.unlink()
     elif dest.exists():
-        backup = dest.with_suffix(dest.suffix + ".bak")
-        dest.rename(backup)
+        from datetime import datetime
+        ts_dir = BACKUP_DIR / datetime.now().strftime("%Y%m%d-%H%M%S")
+        ts_dir.mkdir(parents=True, exist_ok=True)
+        dest.rename(ts_dir / dest.name)
     dest.symlink_to(src)
 
 
