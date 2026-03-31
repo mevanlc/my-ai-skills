@@ -198,15 +198,71 @@ el.click();
 - **Always highlight** on first interaction with a new page or form
 - **Skip highlight** when using a known unique `id` on a page already verified
 
-## Navigation
+## Navigation & Safety
 
-### Rules
+### Why This Matters
 
-- **Never guess or construct URLs** — only navigate using real links found on the page
-- **Use `.click()` or synthetic events** — do not set URLs directly (`window.location =`, tab URL assignment)
-- Get explicit approval before any direct URL navigation
+Browser automation can trigger **irreversible actions** — transferring money, selling
+assets, submitting forms, accepting agreements, changing account settings. A URL that
+looks like it just loads a page might execute a transaction. A button labeled innocuously
+might have destructive consequences. Treat every navigation and interaction on
+financial/transactional sites as potentially state-changing until proven otherwise.
+
+### Navigation Rules
+
+- **Never set URLs directly** — do not use `window.location =`, `window.location.href =`,
+  or tab URL assignment. These bypass the user's ability to see and approve what's
+  happening. The only safe navigation methods are clicking links already present on the
+  page via `.click()` or synthetic events.
+- **Never guess or construct URLs** — only navigate using real links found on the page.
+  A guessed URL (e.g., `/myaccount/taxes`, `/api/transfer`) might trigger server-side
+  actions, redirects, or state changes that cannot be undone.
+- **Read before clicking** — before clicking any link or button, read its `href`, text,
+  and surrounding context. Report what will be clicked to the user if there is any
+  ambiguity about the outcome.
+
+### Dangerous Interactions (Require Explicit User Approval)
+
+Never perform the following without asking the user first:
+
+- **Clicking action buttons**: "Send", "Transfer", "Sell", "Buy", "Convert", "Submit",
+  "Confirm", "Place Order", "Opt In", "Accept", "Agree", "Delete", "Remove",
+  "Withdraw", "Deposit", "Swap", "Trade", "Sign", "Authorize"
+- **Form submissions**: Any form `submit()` call or submit button click
+- **Toggle/setting changes**: Opt-in/out buttons, enable/disable switches, account
+  preference changes
+- **Accepting terms**: Cookie banners, ToS acceptance, agreement checkboxes
+- **Downloading/uploading**: File downloads, document uploads, data exports
+
+When in doubt about whether an action is read-only or state-changing, **ask the user**.
+
+### Safe Operations (No Approval Needed)
+
+- Reading page text (`document.body.innerText`)
+- Querying elements (`querySelectorAll`, reading attributes)
+- Scrolling (`window.scrollTo`)
+- Taking screenshots (`screencapture`)
+- Listing tabs, reading URLs and titles
+- Clicking clearly navigational links (e.g., "Activity", "History", "Statements",
+  "Settings" — links that load informational pages, not action endpoints)
+
+### Financial & Transactional Sites
+
+On banking, brokerage, crypto, payment, and similar sites, apply extra caution:
+
+- **Prefer read-only operations** — extract text, read balances, find links. Avoid
+  clicking anything that could initiate a transaction.
+- **Never click "Send", "Transfer", "Sell", "Buy", "Convert"** without explicit approval,
+  even if the user's overall goal involves these actions.
+- **Be aware that some pages auto-execute** — loading certain URLs on financial sites
+  can trigger actions (e.g., confirming a pending transfer, completing a checkout).
+  This is why direct URL navigation is prohibited.
+- **Session-sensitive actions** — some sites use session tokens in URLs. Navigating to
+  a URL with embedded tokens could authorize actions or expose credentials.
 
 ### Clicking Links
+
+Only click links found on the current page, using element references:
 
 ```javascript
 var link = Array.from(document.querySelectorAll('a'))
@@ -226,7 +282,7 @@ tell application "Safari"
     end tell
 end tell
 
--- Open new tab (when approved)
+-- Open new tab (only with user-approved URL)
 tell application "Safari"
     tell window 1
         set current tab to (make new tab with properties {URL:"https://example.com"})
