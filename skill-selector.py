@@ -6,7 +6,7 @@
 #   "pyyaml>=6.0",
 # ]
 # ///
-"""TUI for selecting which skills/commands to symlink from this repo."""
+"""TUI for selecting which skills to symlink from this repo."""
 
 import os
 from pathlib import Path
@@ -21,21 +21,24 @@ from textual.widgets.selection_list import Selection
 REPO = Path(__file__).resolve().parent
 BACKUP_DIR = REPO / ".backups"
 
+CLAUDE_SKILLS = Path.home() / ".claude" / "skills"
+CODEX_SKILLS = Path.home() / ".codex" / "skills"
+
+# (display label, source subdirectory, list of destination directories)
 CATEGORIES = [
-    ("Claude Skills", "claude-skills", Path.home() / ".claude" / "skills"),
-    ("Claude Commands", "claude-commands", Path.home() / ".claude" / "commands"),
-    ("Codex Skills", "codex-skills", Path.home() / ".codex" / "skills"),
+    ("Common Skills", "common-skills", [CLAUDE_SKILLS, CODEX_SKILLS]),
+    ("Claude Skills", "claude-skills", [CLAUDE_SKILLS]),
+    ("Codex Skills", "codex-skills", [CODEX_SKILLS]),
 ]
 
 # Items managed by other repos — don't touch these.
 SKIP = {
     "claude-skills": {"macos-automation-skill"},
-    "claude-commands": {"commit.md", "gdf-commit.md"},
 }
 
 
 def get_description(path: Path) -> str:
-    """Extract the description from YAML frontmatter of a skill/command."""
+    """Extract the description from YAML frontmatter of a skill."""
     if path.is_dir():
         path = path / "SKILL.md"
     if not path.is_file():
@@ -79,33 +82,37 @@ def get_items(category: str) -> list[tuple[str, str]]:
     return items
 
 
-def is_linked(category: str, name: str, dest_dir: Path) -> bool:
-    dest = dest_dir / name
-    if dest.is_symlink():
-        return dest.resolve() == (REPO / category / name).resolve()
-    return False
+def is_linked(category: str, name: str, dest_dirs: list[Path]) -> bool:
+    src = (REPO / category / name).resolve()
+    return all(
+        (d / name).is_symlink() and (d / name).resolve() == src
+        for d in dest_dirs
+    )
 
 
-def apply_link(category: str, name: str, dest_dir: Path) -> None:
+def apply_link(category: str, name: str, dest_dirs: list[Path]) -> None:
     src = REPO / category / name
-    dest = dest_dir / name
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    if dest.is_symlink():
-        if dest.resolve() == src.resolve():
-            return
-        dest.unlink()
-    elif dest.exists():
-        from datetime import datetime
-        ts_dir = BACKUP_DIR / datetime.now().strftime("%Y%m%d-%H%M%S")
-        ts_dir.mkdir(parents=True, exist_ok=True)
-        dest.rename(ts_dir / dest.name)
-    dest.symlink_to(src)
+    for dest_dir in dest_dirs:
+        dest = dest_dir / name
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        if dest.is_symlink():
+            if dest.resolve() == src.resolve():
+                continue
+            dest.unlink()
+        elif dest.exists():
+            from datetime import datetime
+            ts_dir = BACKUP_DIR / datetime.now().strftime("%Y%m%d-%H%M%S")
+            ts_dir.mkdir(parents=True, exist_ok=True)
+            dest.rename(ts_dir / dest.name)
+        dest.symlink_to(src)
 
 
-def remove_link(category: str, name: str, dest_dir: Path) -> None:
-    dest = dest_dir / name
-    if dest.is_symlink() and dest.resolve() == (REPO / category / name).resolve():
-        dest.unlink()
+def remove_link(category: str, name: str, dest_dirs: list[Path]) -> None:
+    src = (REPO / category / name).resolve()
+    for dest_dir in dest_dirs:
+        dest = dest_dir / name
+        if dest.is_symlink() and dest.resolve() == src:
+            dest.unlink()
 
 
 def build_selections() -> list[Selection]:
@@ -128,7 +135,7 @@ def build_selections() -> list[Selection]:
 
     selections = []
     first = True
-    for label, category, dest_dir in CATEGORIES:
+    for label, category, dest_dirs in CATEGORIES:
         items = get_items(category)
         if not items:
             continue
@@ -139,7 +146,7 @@ def build_selections() -> list[Selection]:
         header = f"[bold]{label}[/bold]"
         selections.append(Selection(header, f"header::{category}", disabled=True))
         for name, desc in items:
-            linked = is_linked(category, name, dest_dir)
+            linked = is_linked(category, name, dest_dirs)
             name_col = name.ljust(max_name)
             if desc and desc_budget > 10:
                 short = desc[:desc_budget] + ("..." if len(desc) > desc_budget else "")
@@ -176,14 +183,14 @@ class SkillSelector(App):
         removed = 0
         for value in all_values:
             category, name = value.split("::", 1)
-            dest_dir = next(d for _, c, d in CATEGORIES if c == category)
+            dest_dirs = next(d for _, c, d in CATEGORIES if c == category)
             if value in selected:
-                if not is_linked(category, name, dest_dir):
-                    apply_link(category, name, dest_dir)
+                if not is_linked(category, name, dest_dirs):
+                    apply_link(category, name, dest_dirs)
                     created += 1
             else:
-                if is_linked(category, name, dest_dir):
-                    remove_link(category, name, dest_dir)
+                if is_linked(category, name, dest_dirs):
+                    remove_link(category, name, dest_dirs)
                     removed += 1
 
         status = self.query_one("#status", Label)

@@ -1,3 +1,9 @@
+---
+name: docs
+description: Execute the Claude Code Docs helper script at ~/.claude-code-docs/claude-docs-helper.sh
+argument-hint: [topic] [-t]
+---
+
 Execute the Claude Code Docs helper script at ~/.claude-code-docs/claude-docs-helper.sh
 
 Usage:

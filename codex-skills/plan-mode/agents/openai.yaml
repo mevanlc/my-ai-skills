@@ -1,4 +1,0 @@
-interface:
-  display_name: "Plan Mode"
-  short_description: "Discuss changes without editing files"
-  default_prompt: "Use $plan-mode to explore the codebase, discuss tradeoffs, and produce an implementation plan without making file edits or other state changes."

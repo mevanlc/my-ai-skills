@@ -1,18 +1,33 @@
 ---
 name: tmux-tui-test
-description: Use when Codex needs to launch, drive, or inspect a terminal UI or other interactive CLI that requires a real TTY. Covers detached tmux sessions, deterministic terminal sizing, key injection, text screen capture, redraw/stability waits, and clean teardown. Use for autonomous testing and debugging of TUIs, curses apps, full-screen CLIs, or any command that breaks under plain stdout capture.
+description: Use when you need to launch, drive, or inspect a terminal UI or other interactive CLI that requires a real TTY. Covers detached tmux sessions, deterministic terminal sizing, key injection, text screen capture, redraw/stability waits, and clean teardown. Use for autonomous testing and debugging of TUIs, curses apps, full-screen CLIs, or any command that breaks under plain stdout capture.
 ---
 
 # Tmux TUI Test
 
 Use `tmux` as the TTY backend for interactive terminal apps. Prefer the bundled harness over ad hoc `tmux` commands so session lifecycle, captures, waits, targeting, diffs, and post-exit inspection stay consistent.
 
+## Harness Location
+
+The harness script is at `scripts/tmux_tui_harness.py` within this skill directory. Set `HARNESS` once per session:
+
+```bash
+# Resolve from whichever skills directory has the symlink
+if [ -f ~/.claude/skills/tmux-tui-test/scripts/tmux_tui_harness.py ]; then
+  HARNESS=~/.claude/skills/tmux-tui-test/scripts/tmux_tui_harness.py
+elif [ -f ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py ]; then
+  HARNESS=~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py
+fi
+```
+
+All examples below use `$HARNESS`.
+
 ## Quick Start
 
 1. Start the app in a detached session.
 
 ```bash
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py start --cwd /abs/project --width 120 --height 40 -- cargo run -- -g
+python3 "$HARNESS" start --cwd /abs/project --width 120 --height 40 -- cargo run -- -g
 ```
 
 2. Save the `session` value from the JSON response.
@@ -20,27 +35,27 @@ python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py start --cwd /a
 3. Wait for the first stable screen.
 
 ```bash
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py wait SESSION --mode stable --timeout-ms 5000
+python3 "$HARNESS" wait SESSION --mode stable --timeout-ms 5000
 ```
 
 4. Read the current screen with line numbers and a ruler when you need targeting help.
 
 ```bash
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py read SESSION --plain --number-lines --ruler
+python3 "$HARNESS" read SESSION --plain --number-lines --ruler
 ```
 
 5. Interact, then wait and read again.
 
 ```bash
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py send SESSION --literal "query"
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py wait SESSION --mode stable --timeout-ms 3000 --plain
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py read SESSION --plain
+python3 "$HARNESS" send SESSION --literal "query"
+python3 "$HARNESS" wait SESSION --mode stable --timeout-ms 3000 --plain
+python3 "$HARNESS" read SESSION --plain
 ```
 
 6. Stop the session when done.
 
 ```bash
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py stop SESSION
+python3 "$HARNESS" stop SESSION
 ```
 
 ## What The Harness Returns
@@ -74,11 +89,11 @@ Use this order when you need exact style or selection-state evidence:
 Example:
 
 ```bash
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py snapshot SESSION --name before
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py mouse click SESSION --text "main ↑1" --anchor center
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py snapshot SESSION --name after
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py diff SESSION --before before --after after --style-only --lines 15:17 --cols 1:40 --repr
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py cell SESSION --row 16 --col 6
+python3 "$HARNESS" snapshot SESSION --name before
+python3 "$HARNESS" mouse click SESSION --text "main ↑1" --anchor center
+python3 "$HARNESS" snapshot SESSION --name after
+python3 "$HARNESS" diff SESSION --before before --after after --style-only --lines 15:17 --cols 1:40 --repr
+python3 "$HARNESS" cell SESSION --row 16 --col 6
 ```
 
 ## Mouse Input Model
@@ -117,30 +132,30 @@ python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py cell SESSION -
 ### Cropped Read With Ruler
 
 ```bash
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py read SESSION --plain --lines 15:17 --cols 1:60 --number-lines --ruler
+python3 "$HARNESS" read SESSION --plain --lines 15:17 --cols 1:60 --number-lines --ruler
 ```
 
 ### Find Text Then Click It
 
 ```bash
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py find-text SESSION --text "main ↑1"
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py mouse click SESSION --text "main ↑1" --anchor center
+python3 "$HARNESS" find-text SESSION --text "main ↑1"
+python3 "$HARNESS" mouse click SESSION --text "main ↑1" --anchor center
 ```
 
 ### Inspect Selected-Row Background
 
 ```bash
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py cell SESSION --row 16 --col 6
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py region SESSION --rows 15:17 --cols 1:40 --styles --plain
+python3 "$HARNESS" cell SESSION --row 16 --col 6
+python3 "$HARNESS" region SESSION --rows 15:17 --cols 1:40 --styles --plain
 ```
 
 ### Compare Before/After Style State
 
 ```bash
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py snapshot SESSION --name before
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py send SESSION --literal 3
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py snapshot SESSION --name after
-python3 ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py diff SESSION --before before --after after --style-only --repr
+python3 "$HARNESS" snapshot SESSION --name before
+python3 "$HARNESS" send SESSION --literal 3
+python3 "$HARNESS" snapshot SESSION --name after
+python3 "$HARNESS" diff SESSION --before before --after after --style-only --repr
 ```
 
 ## Crash And Exit Handling

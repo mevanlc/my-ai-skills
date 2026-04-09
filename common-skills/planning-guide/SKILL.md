@@ -1,7 +1,7 @@
 ---
 name: planning-guide
 description: Help decide which planning mode to use for the current task. Compares built-in /plan vs /ultraplan and recommends one based on the situation.
-argument-hint: <optional: brief description of the task>
+argument-hint: "<optional: brief description of the task>"
 ---
 
 # Planning Guide

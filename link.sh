@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Symlink skills and commands from this repo into
-# ~/.claude/ and ~/.codex/.
+# Symlink skills from this repo into ~/.claude/ and ~/.codex/.
 #
 # Usage:
 #   ./link.sh          # create symlinks (default)
@@ -25,7 +24,6 @@ done
 
 # Items managed by other repos (agent-commit-command, etc.) — skip these.
 SKIP_CLAUDE_SKILLS=(macos-automation-skill)
-SKIP_CLAUDE_COMMANDS=(commit.md gdf-commit.md)
 
 is_skipped() {
   local name="$1"; shift
@@ -66,9 +64,17 @@ do_link() {
   $DRY || ln -s "$src" "$dest"
 }
 
-# --- Claude skills ---
+# --- Common skills (installed to both Claude and Codex) ---
+echo "=== Common skills ==="
+mkdir -p ~/.claude/skills ~/.codex/skills
+for item in "$REPO"/common-skills/*/; do
+  name="$(basename "$item")"
+  do_link "$REPO/common-skills/$name" "$HOME/.claude/skills/$name"
+  do_link "$REPO/common-skills/$name" "$HOME/.codex/skills/$name"
+done
+
+# --- Claude-only skills ---
 echo "=== Claude skills ==="
-mkdir -p ~/.claude/skills
 for item in "$REPO"/claude-skills/*/; do
   name="$(basename "$item")"
   [[ "$name" == "skills" ]] && continue  # skip nested 'skills' dir if present
@@ -76,18 +82,8 @@ for item in "$REPO"/claude-skills/*/; do
   do_link "$REPO/claude-skills/$name" "$HOME/.claude/skills/$name"
 done
 
-# --- Claude commands ---
-echo "=== Claude commands ==="
-mkdir -p ~/.claude/commands
-for item in "$REPO"/claude-commands/*; do
-  name="$(basename "$item")"
-  is_skipped "$name" "${SKIP_CLAUDE_COMMANDS[@]}" && continue
-  do_link "$REPO/claude-commands/$name" "$HOME/.claude/commands/$name"
-done
-
-# --- Codex skills ---
+# --- Codex-only skills ---
 echo "=== Codex skills ==="
-mkdir -p ~/.codex/skills
 for item in "$REPO"/codex-skills/*/; do
   name="$(basename "$item")"
   do_link "$REPO/codex-skills/$name" "$HOME/.codex/skills/$name"

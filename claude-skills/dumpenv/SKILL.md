@@ -1,6 +1,7 @@
 ---
-allowed-tools: Bash(*), Edit, Glob, Grep, NotebookEdit, NotebookRead, Read, SlashCommand, Task, TodoWrite, WebFetch, WebSearch, Write, AskUserQuestion
+name: dumpenv
 description: slash command to help debug slash commands -- no response necessary from the model
+allowed-tools: Bash(*), Edit, Glob, Grep, NotebookEdit, NotebookRead, Read, SlashCommand, Task, TodoWrite, WebFetch, WebSearch, Write, AskUserQuestion
 argument-hint: [args]
 model: haiku
 ---

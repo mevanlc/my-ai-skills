@@ -1,6 +1,6 @@
 ---
 name: python-uv
-description: Use `uv` as a fast, unified Python project + dependency + tool runner: create projects, manage deps + lockfiles, run commands in a synced env, run/install Python tools, and work with standalone scripts via inline metadata. Use instead of `python -m venv`, `pip`, `pipx`, pdm, poetry, etc.
+description: As soon as we start using `uv` in a session, read this skill.
 ---
 
 # uv
@@ -92,5 +92,68 @@ uvx ruff -- --version
 uvx black --help
 ```
 
-# Further reading
-`{SKILL_DIR}/docs/**/*.md`
+## If you're trying to create a new CLI tool project
+When the user wants a proper package with a CLI entry point (not a standalone script):
+
+1. User should `mkdir` and `cd` into the project directory first.
+
+2. Initialize as a package:
+   ```bash
+   uv init --package .
+   ```
+
+3. Edit `pyproject.toml`:
+   - Set `license = "MIT"` (or as appropriate)
+   - Set `requires-python = ">=3.14"`
+   - Add a CLI entry point:
+     ```toml
+     [project.scripts]
+     my-tool = "my_tool.cli:main"
+     ```
+   
+4. Create `src/{pkg}/cli.py` with an `argparse`-based `main()`.
+
+5. Add dev dependencies:
+   ```bash
+   uv add --dev ruff
+   ```
+
+6. Editable-install project bins to `~/.local/bin`:
+   ```bash
+   uv tool install -e .
+   ```
+
+Key differences from `uv init` (app-style):
+- `--package` creates `src/{pkg}/` layout with `__init__.py`
+- Entry points in `[project.scripts]` give you a named CLI command
+- `uv tool install -e .` makes the command available globally during development
+
+# Up-to-Date Documentation
+
+A local clone of the consolidated Astral docs provides the latest reference material.
+
+## Refresh Docs
+
+```bash
+if [ -d ~/p/gh/astral-sh-docs/ ]; then
+  git -C ~/p/gh/astral-sh-docs/ pull --ff-only
+else
+  git clone https://github.com/astral-sh/docs ~/p/gh/astral-sh-docs/
+fi
+```
+
+## Read Docs
+
+Browse `~/p/gh/astral-sh-docs/site/uv/` for full documentation. Key paths:
+
+- `guides/scripts/index.md` — PEP 723 inline-dependency scripts
+- `guides/projects/index.md` — project workflow
+- `guides/tools/index.md` — tools (`uvx`, `uv tool`)
+- `concepts/` — environments, resolution, caching, indexes
+- `reference/cli/index.md` — full CLI reference (~675KB; grep to extract sections)
+
+Example: extract just the `uv add` CLI reference:
+
+```bash
+rg -UNo '(^## .*uv-add[\s\S]+?)^## ' --replace '$1' ~/p/gh/astral-sh-docs/site/uv/reference/cli/index.md
+```

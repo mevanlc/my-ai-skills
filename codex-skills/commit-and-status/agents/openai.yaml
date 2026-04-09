@@ -1,4 +1,0 @@
-interface:
-  display_name: "Commit And Status"
-  short_description: "Create a conventional commit and report git status"
-  default_prompt: "Use $commit-and-status when the user wants a conventional commit created from the current worktree and then wants the resulting git status summarized."

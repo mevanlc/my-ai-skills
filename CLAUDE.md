@@ -1,11 +1,11 @@
 # my-ai-skills
 
-Central repo for Claude and Codex skills/commands. Each subdirectory maps to a target location:
+Central repo for Claude and Codex skills. Each subdirectory maps to a target location:
 
 | Directory | Symlinked into |
 |---|---|
+| `common-skills/` | `~/.claude/skills/` and `~/.codex/skills/` |
 | `claude-skills/` | `~/.claude/skills/` |
-| `claude-commands/` | `~/.claude/commands/` |
 | `codex-skills/` | `~/.codex/skills/` |
 
 ## Tools
