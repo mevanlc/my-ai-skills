@@ -1,9 +1,3 @@
-Let’s do **AI-AAR-S next**.
-
-Reason: you’ll use it *way* more often. Most sessions don’t deserve a medium review, and if you make the “default” too heavy, people (and agents) stop doing it. AI-AAR-S becomes your always-on “handoff checksum.” Then AI-AAR-M is for anything non-trivial, and AI-AAR-L is for big bets / incidents / repeated failures.
-
-Here’s the concise **AI-AAR-S Handbook**.
-
 # AI After Action Report: Small Edition (AI-AAR-S)
 
 AI-AAR-S is the **minimum viable handoff** between jobs. Timebox: **60–180 seconds**. Target length: **6–12 bullets**. If you need paragraphs, upgrade to AI-AAR-M.

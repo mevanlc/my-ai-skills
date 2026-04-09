@@ -1,9 +1,3 @@
-Yep — that’s the right instinct: **AI-AAR-L shouldn’t be “more sections,” it should be “more depth where it matters,” plus 0–3 extra sections that force rigor.** Think *incident/postmortem energy* without importing all the ceremony.
-
-Below is a concise **AI-AAR-L Handbook** built as **AI-AAR-M + depth guidance**, with **three optional add-ons** you can include when relevant.
-
----
-
 # AI After Action Report: Large Edition (AI-AAR-L)
 
 AI-AAR-L is for **high-stakes, high-cost, high-complexity, or repeat-failure** work. Its purpose is to produce:
