@@ -1,6 +1,6 @@
 ---
 name: ask-mode
-description: Read-only investigation and explanation for codebase, tooling, or environment questions. Use when the user wants analysis, debugging help, architectural discussion, or general answers without file edits, installs, commits, or other state-changing actions unless they later approve a specific write operation.
+description: Use when the user asks for ask-mode or explicitly invokes the skill.
 ---
 
 # Ask Mode
