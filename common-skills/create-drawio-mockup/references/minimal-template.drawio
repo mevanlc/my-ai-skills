@@ -1,0 +1,39 @@
+<mxfile host="hand-authored" version="29.6.6">
+  <diagram name="example" id="example-mockup">
+    <mxGraphModel dx="1100" dy="700" grid="0" gridSize="10" guides="1" tooltips="1" connect="0" arrows="0" fold="0" page="1" pageScale="1" pageWidth="800" pageHeight="500" background="#000000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- 1. Filled panel background. -->
+        <mxCell id="panel-bg" parent="1" vertex="1" value=""
+                style="rounded=1;arcSize=4;whiteSpace=wrap;html=1;fillColor=#0D1117;strokeColor=none;">
+          <mxGeometry x="40" y="40" width="720" height="200" as="geometry"/>
+        </mxCell>
+
+        <!-- 2. Border + title (title sits on top border via offset). -->
+        <mxCell id="panel-border" parent="1" vertex="1"
+                value="&lt;b&gt;Preview&lt;/b&gt;"
+                style="rounded=1;arcSize=4;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#555555;fontColor=light-dark(#000000,#888888);fontFamily=Courier New;fontSize=11;align=left;verticalAlign=top;spacingTop=1;spacingLeft=8;labelBackgroundColor=#000000;">
+          <mxGeometry x="40" y="40" width="720" height="200" as="geometry">
+            <mxPoint y="-9" as="offset"/>
+          </mxGeometry>
+        </mxCell>
+
+        <!-- 3. Rich-HTML text overlay (transparent, click-through). -->
+        <mxCell id="panel-content" parent="1" vertex="1"
+                value="&lt;font color=&quot;#55CCCC&quot;&gt;🤖 Sonnet 4.5&lt;/font&gt;&lt;font color=&quot;#666666&quot;&gt; | &lt;/font&gt;&lt;font color=&quot;#5588FF&quot;&gt;📁 project&lt;/font&gt;&lt;font color=&quot;#666666&quot;&gt; | &lt;/font&gt;&lt;font color=&quot;#55CC55&quot;&gt;🌿 main ✓&lt;/font&gt;&lt;br&gt;&lt;font color=&quot;#888888&quot;&gt;&amp;nbsp;&amp;nbsp;Two-space-indented row, mixing &lt;b&gt;bold&lt;/b&gt; and color.&lt;/font&gt;"
+                style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=top;fontFamily=Courier New;fontSize=12;spacingTop=8;spacingLeft=12;pointerEvents=0;">
+          <mxGeometry x="40" y="40" width="720" height="200" as="geometry"/>
+        </mxCell>
+
+        <!-- Footer key-hint row -->
+        <mxCell id="hints" parent="1" vertex="1"
+                value="&lt;font color=&quot;#555555&quot;&gt;[Tab]&lt;/font&gt;&lt;font color=&quot;#888888&quot;&gt; Panel&amp;nbsp;&amp;nbsp;&lt;/font&gt;&lt;font color=&quot;#555555&quot;&gt;[⏎]&lt;/font&gt;&lt;font color=&quot;#888888&quot;&gt; Edit&amp;nbsp;&amp;nbsp;&lt;/font&gt;&lt;font color=&quot;#555555&quot;&gt;[Esc]&lt;/font&gt;&lt;font color=&quot;#888888&quot;&gt; Cancel&lt;/font&gt;"
+                style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;fontFamily=Courier New;fontSize=11;">
+          <mxGeometry x="48" y="450" width="700" height="22" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
