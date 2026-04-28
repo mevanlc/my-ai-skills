@@ -1,6 +1,6 @@
 ---
 name: superplan
-description: Enhanced planning mode with a mini-deep-research phase. Use when the user wants thorough, research-backed planning before implementation. Goes beyond built-in plan mode by actively gathering information from the web, repositories, MCPs, system commands, and other sources before producing a plan.
+description: Use when the user requests or invokes superplan.
 argument-hint: <topic or goal to plan>
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: Apple Shortcuts as Text
-description: Convert Apple Shortcuts (.shortcut files) to editable XML-plist text and back, so LLMs and humans can read, diff, edit, and regenerate shortcuts. Use when the user wants to "unpack a shortcut", "edit a .shortcut file", "decompile a shortcut", "inspect shortcut source", "round-trip a shortcut", "sign a shortcut", "convert shortcut to text/JSON/XML", or mentions .shortcut / .wflow / WFWorkflow / Shortcuts.app files. macOS only — depends on Apple CLIs (aea, aa, plutil, shortcuts, openssl).
+description: Use when the user invokes or mentions this skill.
 ---
 
 # Apple Shortcuts as Text

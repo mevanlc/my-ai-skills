@@ -1,6 +1,6 @@
 ---
 name: github-pat-creation
-description: Use this skill when Claude is suggesting that the user should create a GitHub PAT (personal access token), or when the user asks about creating a new GitHub PAT.
+description: If you are suggesting that the user create a new GitHub PAT, invoke this skill.
 version: 0.1.0
 ---
 

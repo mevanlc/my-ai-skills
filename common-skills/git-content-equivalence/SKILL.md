@@ -1,6 +1,6 @@
 ---
 name: git-content-equivalence
-description: Use when a user needs help reconciling Git histories that look deeply diverged because of rebases, filter-repo runs, author or metadata rewrites, or force-pushes, but whose file content is mostly the same. Helps determine naive ancestry divergence vs content-equivalent divergence, map rewritten commits by patch equivalence, and recommend a smart replay strategy instead of a naive merge.
+description: Use when the user mentions the skill.
 ---
 
 # Git Content Equivalence

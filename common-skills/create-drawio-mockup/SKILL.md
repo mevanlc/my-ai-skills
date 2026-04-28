@@ -1,6 +1,6 @@
 ---
 name: Create draw.io Mockup
-description: Author or edit `.drawio` (mxGraph XML) files for UI mockups, wireframes, and TUI/CLI screen mockups. Use when the user asks to "make a drawio mockup", "create a wireframe in drawio", "mock up a screen as a .drawio file", "edit a .drawio mockup", "round-trip a drawio file by hand", or hands you a `.drawio`/`.xml` mxGraph file to read or modify. Covers the mxfile/mxGraphModel/mxCell schema, the style mini-language, HTML-in-value rich text, theme-aware colors, and the composition tricks used in real mockups (TUIs, settings dialogs, dark UIs).
+description: Use when the user requests you create a drawio diagram.
 ---
 
 # Create draw.io Mockup

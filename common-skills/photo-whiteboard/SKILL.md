@@ -1,6 +1,6 @@
 ---
 name: Photo to Whiteboard
-description: This skill should be used when the user asks to "clean up document photos", "whiteboard filter", "compress scanned documents", "convert photos to whiteboard", "process document images", "OCR-ready images", "scan cleanup", or wants to convert phone photos of documents into clean, compressed, scanlike images. Also triggers on "photo-to-whiteboard", "document photo processing", or batch image compression of document photos.
+description: Use when the user invokes the skill or wants to apply a whiteboard effect to an image.
 ---
 
 # Photo to Whiteboard

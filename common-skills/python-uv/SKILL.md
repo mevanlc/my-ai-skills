@@ -1,22 +1,12 @@
 ---
 name: python-uv
-description: As soon as we start using `uv` in a session, read this skill.
+description: As soon as we start using `uv`, or the user wants to use `uv`, read this skill.
 ---
 
 # uv
 
-## If you’re trying to build a tiny standalone script (core workflow)
-When you want a single `.py` file that carries its own dependency metadata:
-
-```bash
-uv init --script newtool.py
-uv add --script newtool.py <dependency1> [dependencyN...]
-uv run newtool.py [scriptargs]
-```
-
-Notes that tend to matter in practice:
-- `uv run <file>.py` treats the file as a script (and script arguments go after the filename).
-- Script inline metadata is “self-contained”: when present, it runs with its own declared deps rather than your current project’s deps.
+## If you’re trying to build a tiny standalone script (PEP 723)
+For a single `.py` file that carries its own dependency metadata, see the `uv-script` skill.
 
 ## If you’re trying to start a new repo (project workflow)
 - Create a project:

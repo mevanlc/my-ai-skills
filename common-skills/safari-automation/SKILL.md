@@ -1,6 +1,6 @@
 ---
 name: Safari Browser Automation
-description: This skill should be used when automating Safari browser interactions via AppleScript, including form filling, page reading, navigation, clicking elements, typing into fields, handling native date pickers, or taking screenshots of Safari pages. Trigger on "fill form in Safari", "read Safari page", "automate Safari", "click button in Safari", "type in Safari", "Safari screenshot", "Safari date picker", or when interacting with web pages through Safari automation.
+description: Use when the user requests automation of the Safari browser.
 ---
 
 # Safari Browser Automation

@@ -1,6 +1,6 @@
 ---
 name: merge-conflicts
-description: Resolve git merge conflicts using 3-way diff analysis. Use after a `git merge` (or rebase/cherry-pick) that left unresolved conflicts. Invoked with `/merge-conflicts`.
+description: Use when the user invokes the skill.
 ---
 
 # Merge Conflict Resolution

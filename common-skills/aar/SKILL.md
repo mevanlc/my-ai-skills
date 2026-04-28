@@ -1,15 +1,11 @@
 ---
 name: aar
-description: >-
-  Generate an AI After Action Report (AAR) at the end of a job or session.
-  Choose S (small, 60-180s, 6-12 bullets), M (medium, 5-12min, 250-600 words),
-  or L (large, high-stakes/incidents). Use when wrapping up work, handing off
-  context, or capturing lessons learned.
+description: Use when the user requests an aar.
 ---
 
 # AI After Action Reports
 
-Use the appropriate edition based on scope:
+Use the appropriate edition based on scope or user's specification.
 
 - **AI-AAR-S** — minimum viable handoff. 60–180 seconds, 6–12 bullets. Default for most sessions.
 - **AI-AAR-M** — fast structured handoff. 5–12 minutes, ~250–600 words. For non-trivial work.
