@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prune Merged Fork Branches"
+  short_description: "Delete fork branches merged through upstream PRs"
+  default_prompt: "Use $prune-merged-fork-branches to delete local and remote fork branches that have already been merged upstream via PRs."
