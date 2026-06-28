@@ -1,0 +1,4 @@
+interface:
+  display_name: "macOS App Automation"
+  short_description: "Choose macOS GUI automation approaches using .app identity, accessibility trees, computer-use, macos-mcp, AppleScript, shell, or Swift AX probes."
+  default_prompt: "Automate this macOS app task using the strongest available accessibility or app-state evidence, falling back to vision or coordinates only when needed."
