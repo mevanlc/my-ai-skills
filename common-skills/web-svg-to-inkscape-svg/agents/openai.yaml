@@ -1,0 +1,4 @@
+interface:
+  display_name: "Web SVG to Inkscape SVG"
+  short_description: "Convert browser SVGs for Inkscape editing"
+  default_prompt: "Use $web-svg-to-inkscape-svg to convert a browser-oriented SVG into an Inkscape-compatible SVG while preserving visual fidelity."
