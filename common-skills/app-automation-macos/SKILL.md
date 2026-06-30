@@ -13,6 +13,8 @@ Before acting, identify the app by visible name, bundle id, bundle path, or PID,
 
 Many tools work better with a real `.app` bundle than with a raw executable, `java`, `npm`, or a development server process. If app identity matters, inspect `Contents/Info.plist` for `CFBundleName`, `CFBundleIdentifier`, and `CFBundleExecutable`.
 
+For JavaFX or jpackage apps, read `references/javafx.md` before drawing conclusions about widget roles, tab activation, JavaFX native dependencies, or whether direct AX actions should work.
+
 When testing launch behavior, prefer:
 
 ```bash
@@ -67,6 +69,8 @@ plutil -p /path/App.app/Contents/Info.plist
 ```
 
 #### swift one-off programs
+
+Use `scripts/axprobe.swift` when you need a reusable command-line probe for direct AX APIs. Run it from the skill directory, copy it into a repo, or invoke it by absolute path.
 
 Use Swift with `ApplicationServices` when you need direct AX APIs:
 
