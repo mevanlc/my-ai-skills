@@ -40,6 +40,7 @@ The path is the part after the first space.
 ## Remote Workflow (not on the phone)
 
 The phone runs Termux with an SSH server reachable via the host alias `android.local`.
+If `android.local` is not reachable, try the hostname `phone` to attempt over tailscale.
 This skill assumes `~/.ssh/config` is already set up correctly for that alias (port,
 identity/key, and any other options), so plain `ssh android.local` / `scp` just work —
 do not pass `-p`/`-P`, `-i`, or other connection flags. Run the find command remotely

@@ -3,6 +3,8 @@ name: python-uv
 description: As soon as we start using `uv`, or the user wants to use `uv`, read this skill.
 ---
 
+Note: do not this skill more than once per session. An exception is if you feel certain you want to read some of the incremental-discovery reference material in this skill. In that case you may re-read the skill to refresh your memory on the reference material index and explore the expanded material. If not looking for the reference material and you've already read the skill, you should not re-read the skill, since your built-in knowlege of uv is strong.
+
 # uv
 
 ## If you’re trying to build a tiny standalone script (PEP 723)
