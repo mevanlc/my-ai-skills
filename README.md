@@ -13,6 +13,7 @@ This repository contains reusable skills grouped by target environment.
 | `merge-conflicts` | `common-skills/merge-conflicts` | Resolve Git merge, rebase, or cherry-pick conflicts using 3-way diff analysis. |
 | `Photo to Whiteboard` | `common-skills/photo-whiteboard` | Convert phone photos of documents or whiteboards into cleaner, compressed, scan-like images. |
 | `planning-guide` | `common-skills/planning-guide` | Help choose between the built-in planning modes based on the task’s scope and uncertainty. |
+| `png-size-optimization` | `common-skills/png-size-optimization` | Optimize PNG file size without resizing, with lossless and pngquant workflows. |
 | `prune-merged-fork-branches` | `common-skills/prune-merged-fork-branches` | Delete fork branches merged upstream through PRs using GitHub history instead of ancestry checks. |
 | `Safari Browser Automation` | `common-skills/safari-automation` | Automate Safari interactions such as reading pages, clicking, typing, filling forms, and handling date pickers. |
 | `superplan` | `common-skills/superplan` | Run a deeper research-backed planning workflow before implementation. |

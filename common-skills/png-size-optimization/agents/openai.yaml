@@ -1,0 +1,4 @@
+interface:
+  display_name: "PNG Size Optimization"
+  short_description: "Optimize PNG file size without resizing"
+  default_prompt: "Use $png-size-optimization to compress these PNGs while preserving dimensions and comparing lossless versus pngquant workflows."
