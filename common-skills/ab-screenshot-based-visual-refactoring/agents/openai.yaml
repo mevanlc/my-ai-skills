@@ -1,0 +1,4 @@
+interface:
+  display_name: "A/B Screenshot-based Visual Refactoring"
+  short_description: "Analyze visual refactors from before/after screenshots"
+  default_prompt: "Use $ab-screenshot-based-visual-refactoring to decompose these before-and-after screenshots into semantic regions and document the visual mutations."

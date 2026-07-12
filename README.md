@@ -6,6 +6,7 @@ This repository contains reusable skills grouped by target environment.
 
 | Skill | Path | Description |
 |---|---|---|
+| `ab-screenshot-based-visual-refactoring` | `common-skills/ab-screenshot-based-visual-refactoring` | Analyze and document visual refactors by pairing semantic regions from before-and-after screenshots. |
 | `aar` | `common-skills/aar` | Generate an AI After Action Report in small, medium, or large format for handoff, retrospectives, or lesson capture. |
 | `app-automation-macos` | `common-skills/app-automation-macos` | Choose macOS GUI automation approaches across `.app` packaging, accessibility trees, computer-use, macos-mcp, AppleScript, shell, and Swift AX probes. |
 | `git-content-equivalence` | `common-skills/git-content-equivalence` | Analyze rewritten Git history to separate metadata-only divergence from real content changes and recommend a safe replay strategy. |
