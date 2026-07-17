@@ -62,10 +62,17 @@ Use the Edit tool to replace conflict markers with the resolved code. Do NOT lea
 
 ### Phase 4: Verify and complete
 
-1. Confirm no conflict markers remain:
+1. Confirm no conflict markers remain with
+   [`scan-files-for-merge-markers.py`](scan-files-for-merge-markers.py), which is
+   located alongside this `SKILL.md`. Resolve the script path relative to this
+   skill file and pass every resolved file:
    ```bash
-   grep -rn '<<<<<<< \|======= \|>>>>>>>' <file>
+   scan-files-for-merge-markers.py <file> [file...]
    ```
+   Continue only when the scanner prints a self-closing report with
+   `n-files-with-hits="0"` and `total-hits="0"`. An expanded report means merge
+   markers remain; resolve every listed `filepath:lineno:linetext` hit and rerun
+   the scanner.
 
 2. Stage resolved files:
    ```bash
