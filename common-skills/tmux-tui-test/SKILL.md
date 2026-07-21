@@ -22,6 +22,51 @@ fi
 
 All examples below use `$HARNESS`.
 
+## Server Isolation (important when you run inside tmux)
+
+By default the harness runs on its **own private tmux server** — a dedicated
+socket (`tmux -L tui-harness`), separate from the user's interactive tmux. This
+matters: if you (the agent) are running inside the user's tmux, driving sessions
+on the *default* server can resize, kill, or otherwise disrupt the user's own
+window. The private socket makes that impossible — a different server process
+cannot touch the user's sessions.
+
+- **Default (recommended): do nothing.** Every command already targets the
+  private server. Treat that server as *yours*: create, kill, and recreate
+  sessions on it freely. `kill-server` on it is fine and expected.
+- The private server's geometry is pinned (`window-size manual`), so a pane you
+  start at `--width W --height H` keeps that size even though no client is
+  attached — captures stay deterministic.
+
+Manage the private server:
+
+```bash
+python3 "$HARNESS" sessions           # list sessions on the private server (all yours)
+python3 "$HARNESS" kill-server        # tear the whole private server down (safe; recreate on next start)
+```
+
+### Opting into the user's real tmux (`--shared`)
+
+Only when you have a legitimate reason to observe the user's *actual* sessions
+(e.g. they ask you to look at something already running in their tmux), pass the
+global `--shared` flag. It goes **before** the subcommand:
+
+```bash
+python3 "$HARNESS" --shared sessions          # list the user's real sessions (read-only intent)
+python3 "$HARNESS" --shared read their-session --plain
+```
+
+On the shared server, behave like a guest:
+
+- **Confirm with the user first**, and avoid destructive or disruptive
+  server-wide actions: no `kill-server`, don't `stop` sessions you did not
+  create, don't change global options or resize their windows.
+- `kill-server` is refused on `--shared` unless you also pass `--i-am-sure`
+  (only after the user explicitly confirms).
+
+`--socket LABEL` (also global, before the subcommand) targets a differently
+named private server if you ever need more than one.
+
 ## Quick Start
 
 1. Start the app in a detached session.
@@ -126,6 +171,9 @@ python3 "$HARNESS" cell SESSION --row 16 --col 6
 - `diff --style-only`: Use when the text is unchanged but the style changed, such as focus borders or selected-row backgrounds.
 - `resize`: Use only when layout coverage matters. Re-read after resizing because wrapping and pane balance will change.
 - `stop`: Stop the session in the same turn unless the user explicitly wants it left running.
+- `sessions`: List sessions on the current socket. On the private server these are all yours; under `--shared` they are the user's — read-only intent.
+- `kill-server`: Tear down the entire tmux server on the current socket. Safe and normal on the private server (recreated on next `start`); refused under `--shared` without `--i-am-sure`.
+- `--shared` / `--socket LABEL`: Global flags placed BEFORE the subcommand. `--shared` targets the user's default tmux server (guest rules apply — see Server Isolation); `--socket` selects a named private server.
 
 ## Examples
 
@@ -180,7 +228,8 @@ python3 "$HARNESS" diff SESSION --before before --after after --style-only --rep
 
 ## Operating Rules
 
-- Prefer the bundled harness over raw `tmux` subcommands.
+- Prefer the bundled harness over raw `tmux` subcommands. Raw `tmux` (no `-L`) hits the user's default server and can disrupt their session; the harness defaults to a private server for this reason.
+- Stay on the private server unless the user asks you to look at their real tmux. Only then use `--shared`, as a guest (confirm first; no server-wide destructive actions).
 - Prefer the default ANSI capture first. Use `--plain` only when you specifically want stripped text.
 - Use `cell`, `region`, and `diff --style-only` before falling back to screenshots for selection-state questions.
 - Do not add a screenshot path unless the task actually requires visual rendering rather than terminal style state.

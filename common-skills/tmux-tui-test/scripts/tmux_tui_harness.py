@@ -84,6 +84,24 @@ ANSI_COLORS = [
 BRIGHT_ANSI_COLORS = [f"bright-{name}" for name in ANSI_COLORS]
 SNAPSHOT_DIR = Path(tempfile.gettempdir()) / "tmux-tui-test-snapshots"
 
+# The harness runs on its OWN private tmux server (a dedicated `-L` socket) so it
+# can never resize, kill, or otherwise disturb the user's interactive tmux. This
+# socket is the harness's to own: sessions, and the server itself, may be freely
+# created, killed, and recreated. `--shared` switches to the user's default
+# server for the rare case of observing their real sessions (see build_parser).
+DEFAULT_SOCKET = "tui-harness"
+# Set once in main() from the parsed args. None => the user's default tmux server.
+TMUX_SOCKET: Optional[str] = DEFAULT_SOCKET
+
+
+def tmux_base() -> List[str]:
+    """Base argv for every tmux call, honoring the selected server socket."""
+    base = ["tmux"]
+    if TMUX_SOCKET:
+        # `-L` must precede the subcommand; prepending here covers all callers.
+        base += ["-L", TMUX_SOCKET]
+    return base
+
 
 def emit(payload: Dict[str, Any], exit_code: int = 0) -> None:
     json.dump(payload, sys.stdout, indent=2, sort_keys=True)
@@ -101,7 +119,7 @@ def fail(message: str, *, detail: Optional[str] = None, exit_code: int = 1) -> N
 def run_tmux(args: List[str], *, check: bool = True) -> CommandResult:
     try:
         completed = subprocess.run(
-            ["tmux", *args],
+            [*tmux_base(), *args],
             capture_output=True,
             text=True,
             check=False,
@@ -993,6 +1011,10 @@ def cmd_start(args: argparse.Namespace) -> None:
 
     run_tmux(tmux_args)
     run_tmux(["set-window-option", "-t", session, "remain-on-exit", "on"])
+    # Pin the pane geometry: on a server with no attached client, tmux would
+    # otherwise renegotiate the -x/-y size (e.g. snap to 80x24). "manual" keeps
+    # captures deterministic regardless of whether a client ever attaches.
+    run_tmux(["set-option", "-t", session, "window-size", "manual"], check=False)
     info = session_info(session)
     info["action"] = "start"
     info["command_line"] = command
@@ -1436,6 +1458,59 @@ def cmd_stop(args: argparse.Namespace) -> None:
     emit({"action": "stop", "ok": True, "session": args.session, "stopped": True})
 
 
+def cmd_sessions(args: argparse.Namespace) -> None:
+    # List sessions on the *current* socket only. On the private harness server
+    # these are all ours; on --shared these are the user's, so treat read-only.
+    result = run_tmux(
+        ["list-sessions", "-F", "#{session_name}\t#{session_windows}\t#{session_attached}"],
+        check=False,
+    )
+    sessions = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        name, _, rest = line.partition("\t")
+        windows, _, attached = rest.partition("\t")
+        sessions.append(
+            {
+                "name": name,
+                "windows": int(windows) if windows.isdigit() else None,
+                "attached": attached == "1",
+            }
+        )
+    emit(
+        {
+            "action": "sessions",
+            "ok": True,
+            "socket": TMUX_SOCKET,
+            "shared": TMUX_SOCKET is None,
+            "sessions": sessions,
+        }
+    )
+
+
+def cmd_kill_server(args: argparse.Namespace) -> None:
+    # kill-server tears down EVERY session on the socket. That is fine — expected,
+    # even — on the harness's private server, which is ours to recycle. On the
+    # user's default server it would destroy their work, so refuse hard unless the
+    # caller has explicitly confirmed intent with the user (--i-am-sure).
+    if TMUX_SOCKET is None and not args.i_am_sure:
+        raise HarnessError(
+            "refusing to kill-server on the user's DEFAULT tmux server: this would "
+            "destroy all of their sessions. Run against the private harness socket "
+            "(the default), or, only after the user confirms, pass --i-am-sure."
+        )
+    run_tmux(["kill-server"], check=False)
+    emit(
+        {
+            "action": "kill-server",
+            "ok": True,
+            "socket": TMUX_SOCKET,
+            "shared": TMUX_SOCKET is None,
+        }
+    )
+
+
 def add_capture_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--history", type=int, help="Include N lines of scrollback")
     parser.add_argument(
@@ -1504,13 +1579,49 @@ def add_text_target_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def build_common_parser() -> argparse.ArgumentParser:
+    """Server-isolation flags shared by every subcommand (added via parents=)."""
+    common = argparse.ArgumentParser(add_help=False)
+    group = common.add_argument_group("server isolation")
+    group.add_argument(
+        "--socket",
+        default=DEFAULT_SOCKET,
+        metavar="LABEL",
+        help=(
+            f"tmux server socket label passed to `tmux -L` (default: {DEFAULT_SOCKET!r}). "
+            "This private server is isolated from the user's interactive tmux and is "
+            "the harness's to own — kill/recreate it freely."
+        ),
+    )
+    group.add_argument(
+        "--shared",
+        action="store_true",
+        help=(
+            "Use the user's DEFAULT tmux server instead of the private harness socket. "
+            "Only for legitimately observing the user's own sessions, and only after "
+            "clarifying with them first. On the shared server, avoid destructive or "
+            "disruptive server-wide actions (kill-server, killing sessions you did not "
+            "create, global option changes)."
+        ),
+    )
+    return common
+
+
 def build_parser() -> argparse.ArgumentParser:
+    # Server-isolation flags are global: they go BEFORE the subcommand, e.g.
+    #   tmux_tui_harness.py --shared sessions
+    #   tmux_tui_harness.py --socket my-server start -- cmd
+    # The default (no flag) uses the private harness server, isolated from the
+    # user's interactive tmux.
     parser = argparse.ArgumentParser(
-        description="Launch and inspect TUIs in tmux with JSON output."
+        description="Launch and inspect TUIs in tmux with JSON output.",
+        parents=[build_common_parser()],
     )
     subparsers = parser.add_subparsers(dest="action", required=True)
 
-    start = subparsers.add_parser("start", help="Start a detached tmux session")
+    start = subparsers.add_parser(
+        "start", help="Start a detached tmux session"
+    )
     start.add_argument("--session", help="Explicit tmux session name")
     start.add_argument("--cwd", help="Working directory for the command")
     start.add_argument("--width", type=int, default=120, help="Pane width")
@@ -1525,7 +1636,9 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("argv", nargs=argparse.REMAINDER, help="Command to run after --")
     start.set_defaults(func=cmd_start)
 
-    send = subparsers.add_parser("send", help="Send keys or literal text to a session")
+    send = subparsers.add_parser(
+        "send", help="Send keys or literal text to a session"
+    )
     send.add_argument("session", help="tmux session name")
     send.add_argument(
         "--literal",
@@ -1550,7 +1663,9 @@ def build_parser() -> argparse.ArgumentParser:
     mouse = subparsers.add_parser("mouse", help="Send mouse events to a session")
     mouse_subparsers = mouse.add_subparsers(dest="mouse_action", required=True)
 
-    click = mouse_subparsers.add_parser("click", help="Send a mouse click")
+    click = mouse_subparsers.add_parser(
+        "click", help="Send a mouse click"
+    )
     click.add_argument("session", help="tmux session name")
     add_text_target_args(click)
     click.add_argument(
@@ -1563,7 +1678,9 @@ def build_parser() -> argparse.ArgumentParser:
     click.add_argument("--pause-ms", type=int, default=0, help="Optional pause after the click sequence")
     click.set_defaults(func=cmd_mouse_click)
 
-    scroll = mouse_subparsers.add_parser("scroll", help="Send mouse wheel events")
+    scroll = mouse_subparsers.add_parser(
+        "scroll", help="Send mouse wheel events"
+    )
     scroll.add_argument("session", help="tmux session name")
     add_text_target_args(scroll)
     scroll.add_argument(
@@ -1576,7 +1693,9 @@ def build_parser() -> argparse.ArgumentParser:
     scroll.add_argument("--pause-ms", type=int, default=0, help="Optional pause after the scroll sequence")
     scroll.set_defaults(func=cmd_mouse_scroll)
 
-    drag = mouse_subparsers.add_parser("drag", help="Send a click-and-drag gesture")
+    drag = mouse_subparsers.add_parser(
+        "drag", help="Send a click-and-drag gesture"
+    )
     drag.add_argument("session", help="tmux session name")
     drag.add_argument("--start-row", type=int, help="1-based drag start row")
     drag.add_argument("--start-col", type=int, help="1-based drag start column")
@@ -1618,14 +1737,18 @@ def build_parser() -> argparse.ArgumentParser:
     drag.add_argument("--pause-ms", type=int, default=0, help="Optional pause after the drag sequence")
     drag.set_defaults(func=cmd_mouse_drag)
 
-    read = subparsers.add_parser("read", help="Capture the current pane text")
+    read = subparsers.add_parser(
+        "read", help="Capture the current pane text"
+    )
     read.add_argument("session", help="tmux session name")
     add_capture_args(read)
     add_display_flags(read)
     add_range_flags(read)
     read.set_defaults(func=cmd_read)
 
-    wait = subparsers.add_parser("wait", help="Wait for screen change or stability")
+    wait = subparsers.add_parser(
+        "wait", help="Wait for screen change or stability"
+    )
     wait.add_argument("session", help="tmux session name")
     wait.add_argument(
         "--mode",
@@ -1656,14 +1779,18 @@ def build_parser() -> argparse.ArgumentParser:
     add_capture_args(wait)
     wait.set_defaults(func=cmd_wait)
 
-    cell = subparsers.add_parser("cell", help="Inspect one cell at row,col")
+    cell = subparsers.add_parser(
+        "cell", help="Inspect one cell at row,col"
+    )
     cell.add_argument("session", help="tmux session name")
     cell.add_argument("--row", type=int, required=True, help="1-based row")
     cell.add_argument("--col", type=int, required=True, help="1-based column")
     add_capture_args(cell)
     cell.set_defaults(func=cmd_cell)
 
-    region = subparsers.add_parser("region", help="Inspect a cropped region of the pane")
+    region = subparsers.add_parser(
+        "region", help="Inspect a cropped region of the pane"
+    )
     region.add_argument("session", help="tmux session name")
     region.add_argument("--rows", help="Inclusive row range like 10:20")
     region.add_argument("--cols", help="Inclusive column range like 5:80")
@@ -1672,7 +1799,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_display_flags(region)
     region.set_defaults(func=cmd_region)
 
-    find_text = subparsers.add_parser("find-text", help="Find text and return row,col spans")
+    find_text = subparsers.add_parser(
+        "find-text", help="Find text and return row,col spans"
+    )
     find_text.add_argument("session", help="tmux session name")
     find_text.add_argument("--text", required=True, help="Text to search for")
     find_text.add_argument("--ignore-case", action="store_true", help="Search case-insensitively")
@@ -1680,14 +1809,19 @@ def build_parser() -> argparse.ArgumentParser:
     add_capture_args(find_text)
     find_text.set_defaults(func=cmd_find_text)
 
-    snapshot = subparsers.add_parser("snapshot", help="Save the current screen for later diffing")
+    snapshot = subparsers.add_parser(
+        "snapshot", help="Save the current screen for later diffing"
+    )
     snapshot.add_argument("session", help="tmux session name")
     snapshot.add_argument("--name", required=True, help="Snapshot name")
     snapshot.add_argument("--overwrite", action="store_true", help="Replace an existing snapshot of the same name")
     add_capture_args(snapshot)
     snapshot.set_defaults(func=cmd_snapshot)
 
-    diff = subparsers.add_parser("diff", help="Compare saved snapshots or a snapshot against the current screen")
+    diff = subparsers.add_parser(
+        "diff",
+        help="Compare saved snapshots or a snapshot against the current screen",
+    )
     diff.add_argument("session", help="tmux session name")
     diff.add_argument("--before", required=True, help="Snapshot name for the baseline state")
     diff.add_argument("--after", help="Snapshot name for the comparison state; defaults to the current screen")
@@ -1697,20 +1831,47 @@ def build_parser() -> argparse.ArgumentParser:
     add_range_flags(diff)
     diff.set_defaults(func=cmd_diff)
 
-    resize = subparsers.add_parser("resize", help="Resize the tmux window")
+    resize = subparsers.add_parser(
+        "resize", help="Resize the tmux window"
+    )
     resize.add_argument("session", help="tmux session name")
     resize.add_argument("--width", type=int, required=True, help="Pane width")
     resize.add_argument("--height", type=int, required=True, help="Pane height")
     resize.set_defaults(func=cmd_resize)
 
-    info = subparsers.add_parser("info", help="Inspect the session metadata")
+    info = subparsers.add_parser(
+        "info", help="Inspect the session metadata"
+    )
     info.add_argument("session", help="tmux session name")
     info.set_defaults(func=cmd_info)
 
-    stop = subparsers.add_parser("stop", help="Kill the tmux session")
+    stop = subparsers.add_parser(
+        "stop", help="Kill the tmux session"
+    )
     stop.add_argument("session", help="tmux session name")
     stop.add_argument("--ignore-missing", action="store_true", help="Treat a missing session as a successful no-op")
     stop.set_defaults(func=cmd_stop)
+
+    sessions = subparsers.add_parser(
+        "sessions",
+        help="List sessions on the current socket (all ours on the private server)",
+    )
+    sessions.set_defaults(func=cmd_sessions)
+
+    kill_server = subparsers.add_parser(
+        "kill-server",
+        help="Tear down the whole tmux server on the current socket",
+    )
+    kill_server.add_argument(
+        "--i-am-sure",
+        action="store_true",
+        help=(
+            "Required to kill-server on the user's DEFAULT (--shared) server. Only "
+            "pass this after the user has explicitly confirmed. Ignored (not needed) "
+            "on the private harness socket."
+        ),
+    )
+    kill_server.set_defaults(func=cmd_kill_server)
 
     return parser
 
@@ -1718,6 +1879,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    # Select the tmux server socket for this invocation. Default: the private
+    # harness server. --shared => the user's default server (no -L).
+    global TMUX_SOCKET
+    TMUX_SOCKET = None if getattr(args, "shared", False) else getattr(args, "socket", DEFAULT_SOCKET)
     try:
         args.func(args)
     except HarnessError as exc:
