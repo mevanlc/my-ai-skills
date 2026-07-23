@@ -1,9 +1,13 @@
 # AI After Action Report: Large Edition (AI-AAR-L)
 
-AI-AAR-L is for **high-stakes, high-cost, high-complexity, or repeat-failure** work. Its purpose is to produce:
+AI-AAR-L is for **high-stakes, high-cost, high-complexity, or repeat-failure** work.
+Its purpose is to produce:
 
-1. a reliable handoff, 2) a defensible record, and 3) **closed-loop improvements**.
-   Timebox: **30–90 minutes**. Target length: **1–3 pages**. If it’s longer, you’re writing a spec, not an AAR.
+1) a reliable handoff
+2) a defensible record, and
+3) **closed-loop improvements**.
+
+Target length: **1–3 pages**. If it’s longer, you’re writing a spec, not an AAR.
 
 ## 1) Goal & Success Criteria
 
@@ -130,16 +134,3 @@ If your deltas affect a team/system:
 * Migration plan, comms, training notes
 * Backout plan
 * Ownership map
-
----
-
-### Rule of thumb for L vs M
-
-If any of these are true, bump to **L**:
-
-* The job cost you “real money” (compute, time, risk, reputation)
-* The job touched sensitive data or safety boundaries
-* You hit the **same failure twice**
-* You’re changing prompts/tools/processes that others will reuse
-
-If you want, I can also provide a **one-page AI-AAR-L template** that’s fill-in-the-blanks (same sections, preformatted bullets) so it’s easy to run consistently.

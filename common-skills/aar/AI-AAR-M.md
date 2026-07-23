@@ -1,6 +1,9 @@
 # AI After Action Report: Medium Edition (AI-AAR-M)
 
-AI-AAR-M is a **fast, structured handoff** between AI agent jobs/sessions. It captures the minimum context needed to (1) **continue work safely**, (2) **transfer field knowledge**, and (3) **improve the next run**. Timebox: **5–12 minutes**. Target length: **~250–600 words**. If it’s longer, you probably need AI-AAR-L.
+AI-AAR-M is a **fast, structured handoff** between AI agent jobs/sessions.
+It captures the minimum context needed to (1) **continue work safely**,
+(2) **transfer field knowledge**, and (3) **improve the next run**.
+Target length: **~250–600 words**.
 
 ## 1) Goal & Success Criteria
 

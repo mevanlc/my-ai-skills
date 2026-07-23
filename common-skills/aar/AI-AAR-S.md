@@ -1,6 +1,6 @@
 # AI After Action Report: Small Edition (AI-AAR-S)
 
-AI-AAR-S is the **minimum viable handoff** between jobs. Timebox: **60–180 seconds**. Target length: **6–12 bullets**. If you need paragraphs, upgrade to AI-AAR-M.
+AI-AAR-S is the **minimum viable handoff** between jobs. Target length: **6–12 bullets**.
 
 ## 1) Goal (1 line)
 
@@ -54,7 +54,3 @@ What could go wrong silently, and how to detect it?
 
 1. …
    N. …
-
----
-
-If you’d rather go **AI-AAR-L** next, I can — but I’d only recommend it after you’ve run S/M for a week and can name the real failure modes you want L to prevent (incident-style, postmortem-style, etc.).
