@@ -37,5 +37,4 @@ This repository contains reusable skills grouped by target environment.
 |---|---|---|
 | `bgshells` | `claude-skills/bgshells` | Find, audit, and clean up live Claude Code background shells (`Bash` run_in_background) by which processes still hold a `tasks/*.output` open — recovers leaked waiters after a context compaction. |
 | `codex-agent` | `claude-skills/codex-agent` | Launch or continue a Codex agent session to handle a delegated task autonomously. |
-| `docs` | `claude-skills/docs` | Run the Claude Code docs helper script to list, refresh-check, or read documentation topics. |
 | `dumpenv` | `claude-skills/dumpenv` | Dump slash-command environment details for debugging without needing a normal model response. |
