@@ -1,0 +1,4 @@
+interface:
+  display_name: "Screenshot-based Visual Refactoring"
+  short_description: "Implement visual refactors by diffing current and target UI screenshots"
+  default_prompt: "Use $screenshot-based-visual-refactoring to decompose these current-state and target-state screenshots into semantic regions, document the visual deltas, and implement the refactor."

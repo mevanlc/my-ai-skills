@@ -1,20 +1,79 @@
 ---
-name: ab-screenshot-based-visual-refactoring
-description: Analyze and document visual refactoring from A/B or before-and-after application screenshots by decomposing each screen into corresponding semantic regions, inspecting focused crop pairs, tracing relocations and interaction changes, and synthesizing the result into a coherent refactor description. Use when a user supplies original and refactored screenshots and wants a detailed visual comparison, mutation inventory, design-archaeology account, implementation brief, or review of how an interface changed.
+name: screenshot-based-visual-refactoring
+description: Diff screenshots of an interface's current state against its desired target state by decomposing each screen into corresponding semantic regions, inspecting focused crop pairs, tracing relocations and interaction changes, and synthesizing the result into a coherent refactor description — then, unless the user asks for analysis only, implement the refactor in the associated codebase, iterating until the rendered UI matches the target. Use when a user supplies current and target screenshots and wants the interface change implemented, or wants a detailed visual comparison, mutation inventory, design-archaeology account, implementation brief, or review of how an interface changed.
 ---
 
-# A/B Screenshot-based Visual Refactoring
+# Screenshot-based Visual Refactoring
 
 ## Purpose
 
-Use before-and-after screenshots as evidence for describing how an application's
-visual organization changed. Reduce the cognitive load of a whole-screen
-comparison by isolating corresponding semantic regions, examining one pair at a
-time, and building an evolving written account.
+Use two screenshots — the interface's current state and its desired target
+state — as evidence for describing how the visual organization changes, and as
+the diff that steers implementation from one to the other. Reduce the cognitive
+load of a whole-screen comparison by isolating corresponding semantic regions,
+examining one pair at a time, and building an evolving written account. The
+same technique describes an already-completed refactor: treat the earlier
+screenshot as current and the later one as target.
 
 Treat this as an adaptable analysis technique rather than a rigid pipeline.
 Choose region granularity, tooling, output structure, and measurement precision
 to suit the screenshots and the user's goal.
+
+## Implementing the refactor
+
+Unless the user requests analysis only, treat invocation of this skill as a
+request to implement the refactoring in the associated codebase. The comparison
+workflow below then plays two roles: first it specifies the desired end state,
+then it checks the work. After each change, capture fresh screenshots of the
+application's current state and diff them against the target using the same
+region-pair techniques, treating the remaining deltas as the next round of
+changes.
+
+If computer-use skills or tools can give visual screenshot access to your code
+revisions, use them rather than reasoning about the rendered result from the
+code alone. When more than one computer-use toolset is available and one is not
+working for the app in question, try the others; do not assume they will also
+fail.
+
+Expect a number of iterations as the current state converges on the target.
+Judge each iteration by the visual and design deltas it removes, not by the
+code diff alone.
+
+## Bundled diff tool
+
+`scripts/screenshot-diff.py` (resolved relative to this skill's directory)
+mechanizes the pixel-level comparison. It is a self-contained uv script:
+
+```bash
+uv run <skill-dir>/scripts/screenshot-diff.py current.png target.png -o diffs/
+```
+
+It accepts full screenshots or individual region-crop pairs. One invocation
+writes several complementary views plus `summary.json`:
+
+| Output | Use it to |
+| --- | --- |
+| `01-blend.png` | See both states at once; relocations appear as ghosting |
+| `02-absdiff.png` | Amplified subtractive difference; fast "where did anything change" |
+| `03-heat.png` | Perceptual CIEDE2000 delta-E magnitude; separates real change from rendering noise |
+| `04-mask.png` | Binary change mask after thresholding and noise cleanup |
+| `05/06-boxes-*.png` | Current and target annotated with numbered change-cluster boxes matching `summary.json` |
+| `07-edges.png` | Structure diff: red edges exist only in current, green only in target, gray shared |
+| `08-ssim.png` | Structural dissimilarity; emphasizes layout and texture change over flat color shifts |
+
+The stdout report and `summary.json` include percent of pixels changed,
+mean and p99 delta-E, an SSIM score, per-cluster bounding boxes, and a
+global-shift estimate that is flagged only when shifting the current image
+actually explains most of the diff — use that flag to catch scroll or layout
+offsets before chasing per-pixel deltas. Exit status is 0 when nothing
+survives the threshold and 1 when changes were found, so an implementation
+loop can gate on it.
+
+Tune `--threshold` (delta-E, default 4.0) and `--blur` when anti-aliasing or
+subpixel rendering produces false positives, and `--min-area` to ignore
+scattered noise. Treat the outputs as attention guides for the region-pair
+workflow, not as a replacement for inspecting the native crops: the tool
+localizes change but cannot classify a relocation, restyle, or removal.
 
 ## Guiding ideas
 
@@ -58,15 +117,15 @@ usually survive layout changes better than `upper-strip-2`.
 Allow asymmetric pairings:
 
 - Pair regions with different rectangles and dimensions.
-- Pair a later apparent row in A with an earlier row in B when preceding rows
-  were removed or absorbed elsewhere.
-- Pair several stacked A bands with one consolidated B toolbar when their roles
-  merge.
+- Pair a later apparent row in the current screen with an earlier row in the
+  target when preceding rows were removed or absorbed elsewhere.
+- Pair several stacked current-screen bands with one consolidated target
+  toolbar when their roles merge.
 - Represent non-contiguous consolidation as one-to-many or many-to-one when a
   new region draws from several distant old regions. Do not force unrelated
   source areas into one rectangular crop merely to preserve a one-pair model.
-- Split one broad A area into several B areas, or the reverse, when that better
-  represents the change.
+- Split one broad current-screen area into several target areas, or the
+  reverse, when that better represents the change.
 - Allow crops to overlap when one control or destination participates in more
   than one useful semantic comparison. The region map is an analysis aid, not a
   destructive partition that must tile each screenshot exactly once.
@@ -82,10 +141,10 @@ Preserve the originals and write crops to clearly paired locations when the
 workspace permits, for example:
 
 ```text
-A/navigation-sidebar.png
-B/navigation-sidebar.png
-A/document-header.png
-B/document-header.png
+current/navigation-sidebar.png
+target/navigation-sidebar.png
+current/document-header.png
+target/document-header.png
 ```
 
 Record crop rectangles as `(x, y, width, height)` in native-image pixels. For a
@@ -105,9 +164,9 @@ pixel geometry remain available.
 Use any reliable image tool. With ImageMagick, a minimal pattern is:
 
 ```bash
-magick identify A.png B.png
-magick A.png -crop WIDTHxHEIGHT+X+Y +repage A/region.png
-magick B.png -crop WIDTHxHEIGHT+X+Y +repage B/region.png
+magick identify current.png target.png
+magick current.png -crop WIDTHxHEIGHT+X+Y +repage current/region.png
+magick target.png -crop WIDTHxHEIGHT+X+Y +repage target/region.png
 ```
 
 Avoid resizing the deliverable crops. Magnified temporary copies can help inspect
@@ -171,8 +230,8 @@ Use careful language until behavior is known:
 - Incorporate user or source-code clarification explicitly, and revise earlier
   sections that it changes.
 
-For example, a before screen might show three stacked toolbar bands while the
-after screen consolidates all three into one line. Treat the union as the
+For example, the current screen might show three stacked toolbar bands while
+the target consolidates all three into one line. Treat the union as the
 meaningful pair. Likewise, a vanished `Open` label need not mean the action was
 removed if a nearby document icon now carries it.
 
@@ -184,7 +243,7 @@ without forcing empty headings. A flexible pattern is:
 ```markdown
 ## <Semantic region>
 
-Region dimensions: A is ...; B is ...
+Region dimensions: current is ...; target is ...
 
 ### Summary
 
@@ -225,7 +284,7 @@ After all planned pairs, perform a whole-screen audit.
 A compact cross-region mapping table often makes the final synthesis clearer:
 
 ```markdown
-| Before element | After treatment |
+| Current element | Target treatment |
 | --- | --- |
 | Run summary | Moved into the corner dashboard |
 | Labeled action | Overloaded onto the adjacent icon |
