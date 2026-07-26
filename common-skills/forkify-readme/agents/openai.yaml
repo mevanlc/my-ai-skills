@@ -1,0 +1,4 @@
+interface:
+  display_name: "Forkify README"
+  short_description: "Replace upstream docs with a focused fork README"
+  default_prompt: "Use $forkify-readme to replace this repository’s upstream README with concise, verified documentation of the fork-specific changes."
