@@ -63,12 +63,22 @@ Use the Edit tool to replace conflict markers with the resolved code. Do NOT lea
 ### Phase 4: Verify and complete
 
 1. Confirm no conflict markers remain with
-   [`scan-files-for-merge-markers.py`](scan-files-for-merge-markers.py), which is
-   located alongside this `SKILL.md`. Resolve the script path relative to this
-   skill file and pass every resolved file:
+   [`scan-for-merge-markers.py`](scan-for-merge-markers.py), which is located
+   alongside this `SKILL.md`. Resolve the script path relative to this skill
+   file. By default, run Git mode from the repository root directory:
    ```bash
-   scan-files-for-merge-markers.py <file> [file...]
+   scan-for-merge-markers.py git
    ```
+   This scans Git-reported staged and unstaged modified files plus untracked
+   files that are not ignored. Use other forms only in exceptional situations:
+   ```bash
+   scan-for-merge-markers.py git [--no-untracked] [--no-unstaged] [repodir]
+   scan-for-merge-markers.py files <file> [file...]
+   ```
+   `--no-untracked` skips untracked files. `--no-unstaged` scans only paths
+   listed in the stage, but scans each selected file's complete current
+   worktree content rather than isolating staged hunks.
+
    Continue only when the scanner prints a self-closing report with
    `n-files-with-hits="0"` and `total-hits="0"`. An expanded report means merge
    markers remain; resolve every listed `filepath:lineno:linetext` hit and rerun
