@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -83,6 +84,7 @@ ANSI_COLORS = [
 ]
 BRIGHT_ANSI_COLORS = [f"bright-{name}" for name in ANSI_COLORS]
 SNAPSHOT_DIR = Path(tempfile.gettempdir()) / "tmux-tui-test-snapshots"
+FREEZE_RASTERIZERS = ("auto", "rsvg", "resvg", "sips", "chromium")
 
 # The harness runs on its OWN private tmux server (a dedicated `-L` socket) so it
 # can never resize, kill, or otherwise disturb the user's interactive tmux. This
@@ -235,10 +237,16 @@ def capture_text(
     ansi: bool = True,
     history: Optional[int] = None,
     full_history: bool = False,
+    join_wrapped: bool = True,
+    preserve_trailing_spaces: bool = False,
 ) -> str:
-    args = ["capture-pane", "-t", session, "-p", "-J"]
+    args = ["capture-pane", "-t", session, "-p"]
+    if join_wrapped:
+        args.append("-J")
     if ansi:
         args.append("-e")
+    if preserve_trailing_spaces:
+        args.append("-N")
     if full_history:
         args.extend(["-S", "-"])
     elif history is not None:
@@ -1203,6 +1211,81 @@ def cmd_read(args: argparse.Namespace) -> None:
     emit(payload)
 
 
+def require_freeze() -> str:
+    freeze = shutil.which("freeze")
+    if freeze is None:
+        raise HarnessError(
+            "freeze is not installed or not on PATH. freeze is required for raster "
+            "screenshots; the user must install freeze and ensure it is on PATH before "
+            "using the screenshot command."
+        )
+    return freeze
+
+
+def cmd_screenshot(args: argparse.Namespace) -> None:
+    freeze = require_freeze()
+    output = Path(args.output).expanduser().resolve()
+    if output.suffix.lower() != ".png":
+        raise HarnessError(
+            f"raster screenshot output must use a .png extension, got {str(output)!r}"
+        )
+
+    info = session_info(args.session)
+    ansi_text = capture_text(
+        args.session,
+        ansi=True,
+        history=args.history,
+        full_history=args.full_history,
+        join_wrapped=False,
+        preserve_trailing_spaces=True,
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    command = [
+        freeze,
+        "-c",
+        args.freeze_config,
+        "--rasterizer",
+        args.rasterizer,
+    ]
+    if args.scale is not None:
+        command.extend(["--scale", str(args.scale)])
+    command.extend(["-o", str(output)])
+
+    try:
+        completed = subprocess.run(
+            command,
+            input=ansi_text,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise HarnessError(f"failed to run freeze for raster screenshot: {exc}") from exc
+
+    if completed.returncode != 0:
+        detail = (
+            completed.stderr.strip()
+            or completed.stdout.strip()
+            or f"freeze exited with status {completed.returncode}"
+        )
+        raise HarnessError(f"freeze failed to render raster screenshot: {detail}")
+    if not output.is_file():
+        raise HarnessError(
+            f"freeze reported success but did not create raster screenshot {str(output)!r}"
+        )
+
+    payload = dict(info)
+    payload["action"] = "screenshot"
+    payload["screenshot_path"] = str(output)
+    payload["freeze_path"] = freeze
+    payload["freeze_config"] = args.freeze_config
+    payload["rasterizer"] = args.rasterizer
+    if args.scale is not None:
+        payload["scale"] = args.scale
+    emit(payload)
+
+
 def cmd_wait(args: argparse.Namespace) -> None:
     baseline = capture_text(args.session, ansi=args.ansi, history=args.history, full_history=args.full_history)
     last = baseline
@@ -1745,6 +1828,36 @@ def build_parser() -> argparse.ArgumentParser:
     add_display_flags(read)
     add_range_flags(read)
     read.set_defaults(func=cmd_read)
+
+    screenshot = subparsers.add_parser(
+        "screenshot", help="Render the current pane to a PNG with freeze"
+    )
+    screenshot.add_argument("session", help="tmux session or pane target")
+    screenshot.add_argument(
+        "--output",
+        required=True,
+        metavar="PATH",
+        help="Output PNG path",
+    )
+    screenshot.add_argument(
+        "--freeze-config",
+        default="terminal",
+        metavar="NAME",
+        help="freeze configuration or template name (default: terminal)",
+    )
+    screenshot.add_argument(
+        "--rasterizer",
+        choices=FREEZE_RASTERIZERS,
+        default="auto",
+        help="freeze PNG rasterizer (default: auto)",
+    )
+    screenshot.add_argument(
+        "--scale",
+        type=float,
+        help="freeze output scale for automatically sized PNGs",
+    )
+    add_capture_args(screenshot)
+    screenshot.set_defaults(func=cmd_screenshot)
 
     wait = subparsers.add_parser(
         "wait", help="Wait for screen change or stability"

@@ -21,7 +21,7 @@ This repository contains reusable skills grouped by target environment.
 | `superplan` | `common-skills/superplan` | Run a deeper research-backed planning workflow before implementation. |
 | `termux-latest-screenshot` | `common-skills/termux-latest-screenshot` | Find and view the latest Android screenshot from the standard Termux-accessible screenshots directory. |
 | `termux-open` | `common-skills/termux-open` | Open a local file from Termux in the appropriate Android app or system viewer. |
-| `tmux-tui-test` | `common-skills/tmux-tui-test` | Launch and inspect interactive terminal UIs in tmux for deterministic TTY-based testing and debugging. |
+| `tmux-tui-test` | `common-skills/tmux-tui-test` | Launch, inspect, and render screenshots of interactive terminal UIs in tmux for deterministic TTY-based testing and debugging. |
 | `user-termux-properties` | `common-skills/user-termux-properties` | Edit or explain `~/.termux/termux.properties`, including extra-keys and other Termux UI settings. |
 | `uv-script` | `common-skills/uv-script` | Create, run, and explain standalone Python scripts that use `uv` and PEP 723 inline dependency metadata. |
 | `web-svg-to-inkscape-svg` | `common-skills/web-svg-to-inkscape-svg` | Convert browser-oriented SVGs into Inkscape-compatible SVG with fidelity checks. |

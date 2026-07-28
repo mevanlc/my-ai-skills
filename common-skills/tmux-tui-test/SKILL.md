@@ -1,6 +1,6 @@
 ---
 name: tmux-tui-test
-description: Use when you need to launch, drive, or inspect a terminal UI or other interactive CLI that requires a real TTY. Covers detached tmux sessions, deterministic terminal sizing, key injection, text screen capture, redraw/stability waits, and clean teardown. Use for autonomous testing and debugging of TUIs, curses apps, full-screen CLIs, or any command that breaks under plain stdout capture.
+description: Use when you need to launch, drive, or inspect a terminal UI or other interactive CLI that requires a real TTY. Covers detached tmux sessions, deterministic terminal sizing, key injection, text and raster screenshot capture, redraw/stability waits, and clean teardown. Use for autonomous testing and debugging of TUIs, curses apps, full-screen CLIs, or any command that breaks under plain stdout capture.
 ---
 
 # Tmux TUI Test
@@ -97,7 +97,17 @@ python3 "$HARNESS" wait SESSION --mode stable --timeout-ms 3000 --plain
 python3 "$HARNESS" read SESSION --plain
 ```
 
-6. Stop the session when done.
+6. Render and visually inspect a fresh screenshot after implementing a feature or
+   significant code change.
+
+```bash
+python3 "$HARNESS" screenshot SESSION --output /absolute/path/pane.png
+```
+
+Open and examine the resulting PNG. A successful command only proves that the
+image was written; it does not prove that the TUI looks correct.
+
+7. Stop the session when done.
 
 ```bash
 python3 "$HARNESS" stop SESSION
@@ -106,6 +116,8 @@ python3 "$HARNESS" stop SESSION
 ## What The Harness Returns
 
 - `read` returns the rendered pane contents, not a screenshot and not a raw PTY transcript.
+- `screenshot` captures the current pane with ANSI styles and preserved trailing
+  spaces, then pipes it to `freeze -c terminal` to produce a PNG.
 - `read` preserves ANSI escape codes by default so color and style state remain visible.
 - Use `--plain` when you want stripped text that is easier to reason over.
 - `read --lines`, `read --cols`, `--number-lines`, and `--ruler` help isolate and target specific cells.
@@ -118,6 +130,41 @@ python3 "$HARNESS" stop SESSION
 - `diff` compares snapshots or a snapshot against the current screen and supports `--style-only`.
 - `info` returns pane metadata such as `width`, `height`, `pid`, `command`, `alive`, `dead`, cursor fields, pane mode, and tmux mouse flags.
 - When the pane is dead, `info`, `read`, and `wait` include `exit_status` and `exit_signal` when tmux provides them.
+
+## Raster Screenshots
+
+The `screenshot` command requires `freeze` to be installed and available on
+`PATH`. If it is unavailable, the harness reports that `freeze` is required for
+raster screenshots and that the user must install it and ensure it is on
+`PATH` before continuing.
+
+Render the visible pane using the `terminal` freeze template and automatic
+rasterizer selection:
+
+```bash
+python3 "$HARNESS" screenshot SESSION --output /absolute/path/pane.png
+```
+
+Select a rasterizer or output scale when needed:
+
+```bash
+python3 "$HARNESS" screenshot SESSION \
+  --output /absolute/path/pane.png \
+  --rasterizer chromium \
+  --scale 2
+```
+
+Use `--freeze-config NAME` to select another freeze configuration. Use
+`--history N` or `--full-history` only when the image should include scrollback;
+the default captures the visible pane. Output must be a `.png` file. The JSON
+result includes `screenshot_path`, `freeze_path`, `freeze_config`, and
+`rasterizer`.
+
+After each feature or significant code change during a TUI task, retake a
+screenshot and visually examine the newly rendered image at least once. Do not
+reuse a pre-change screenshot as visual evidence. Visually sensitive tasks may
+render and inspect screenshots more often, such as after each
+meaningful layout, color, spacing, glyph, or interaction-state iteration.
 
 ## Fine-Grained Inspection Workflow
 
@@ -160,6 +207,8 @@ python3 "$HARNESS" cell SESSION --row 16 --col 6
 - `read --number-lines --ruler`: Best option when you are choosing exact `row,col` targets.
 - `read --repr`: Best option when you need to inspect ANSI or control codes directly.
 - `read --tokens`: Best option when you need a structured token stream instead of manual ANSI parsing.
+- `screenshot`: Render a PNG for visual inspection. It requires `freeze` on
+  `PATH`; use an absolute `--output` path so the artifact is unambiguous.
 - `cell`: Best option for one exact coordinate. Look at `resolved_bg` and `resolved_fg` when selection or focus is color-driven.
 - `region --styles`: Best option when a whole row or pane header may have style changes.
 - `find-text --text "...":` Use before text-targeted mouse input or when you need exact spans for a selected label.
@@ -206,6 +255,16 @@ python3 "$HARNESS" snapshot SESSION --name after
 python3 "$HARNESS" diff SESSION --before before --after after --style-only --repr
 ```
 
+### Render And Inspect A Raster Screenshot
+
+```bash
+python3 "$HARNESS" screenshot SESSION --output /absolute/path/pane.png
+```
+
+Open the PNG with the available image-inspection tool and examine the actual
+render. Retake and re-examine it after the next feature or significant code
+change; visually sensitive work may require this after every iteration.
+
 ## Crash And Exit Handling
 
 - The harness enables tmux `remain-on-exit`, so dead panes stay readable.
@@ -225,14 +284,20 @@ python3 "$HARNESS" diff SESSION --before before --after after --style-only --rep
 - Use `find-text` before coordinate-based clicks if the screen content is still moving.
 - Restart with a fixed size if the app layout depends on terminal dimensions.
 - Confirm `--cwd` is correct before assuming the app itself is broken.
+- If `screenshot` reports that `freeze` is unavailable, do not substitute a
+  text capture as raster evidence. Tell the user that `freeze` is required and
+  must be installed and available on `PATH`.
 
 ## Operating Rules
 
 - Prefer the bundled harness over raw `tmux` subcommands. Raw `tmux` (no `-L`) hits the user's default server and can disrupt their session; the harness defaults to a private server for this reason.
 - Stay on the private server unless the user asks you to look at their real tmux. Only then use `--shared`, as a guest (confirm first; no server-wide destructive actions).
 - Prefer the default ANSI capture first. Use `--plain` only when you specifically want stripped text.
-- Use `cell`, `region`, and `diff --style-only` before falling back to screenshots for selection-state questions.
-- Do not add a screenshot path unless the task actually requires visual rendering rather than terminal style state.
+- Use `cell`, `region`, and `diff --style-only` for exact selection-state evidence;
+  complement them with `screenshot` when visual appearance matters.
+- After each feature or significant code change during a TUI task, retake and
+  visually re-examine at least one screenshot. Visually sensitive tasks may use
+  screenshots more often.
 - Keep one TUI per tmux session.
 - Use fixed dimensions during debugging so diffs are meaningful.
 
@@ -240,4 +305,5 @@ python3 "$HARNESS" diff SESSION --before before --after after --style-only --rep
 
 ### scripts/
 
-- `tmux_tui_harness.py`: JSON CLI wrapper around `tmux` for launching, inspecting, targeting, snapshotting, and diffing interactive terminal apps.
+- `tmux_tui_harness.py`: JSON CLI wrapper around `tmux` for launching, inspecting, targeting, snapshotting, raster screenshotting, and diffing interactive terminal apps.
+- `test_tmux_tui_harness.py`: Unit coverage for the raster screenshot command and its dependency/error contracts.
