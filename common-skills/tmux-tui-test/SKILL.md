@@ -97,15 +97,17 @@ python3 "$HARNESS" wait SESSION --mode stable --timeout-ms 3000 --plain
 python3 "$HARNESS" read SESSION --plain
 ```
 
-6. Render and visually inspect a fresh screenshot after implementing a feature or
-   significant code change.
+6. If `freeze` is available, render and visually inspect a fresh screenshot after
+   implementing a feature or significant code change.
 
 ```bash
 python3 "$HARNESS" screenshot SESSION --output /absolute/path/pane.png
 ```
 
 Open and examine the resulting PNG. A successful command only proves that the
-image was written; it does not prove that the TUI looks correct.
+image was written; it does not prove that the TUI looks correct. If `freeze` is
+unavailable, skip the raster screenshot and continue with fresh `read`, `cell`,
+`region`, and `diff` evidence as appropriate.
 
 7. Stop the session when done.
 
@@ -133,10 +135,11 @@ python3 "$HARNESS" stop SESSION
 
 ## Raster Screenshots
 
-The `screenshot` command requires `freeze` to be installed and available on
-`PATH`. If it is unavailable, the harness reports that `freeze` is required for
-raster screenshots and that the user must install it and ensure it is on
-`PATH` before continuing.
+Use the `screenshot` command when `freeze` is installed and available on `PATH`.
+If it is unavailable, proceed without raster screenshots; do not block the task
+on installing it. Use fresh text captures and fine-grained style inspection
+instead, and mention the missing raster validation when visual appearance is
+material to the result.
 
 Render the visible pane using the `terminal` freeze template and automatic
 rasterizer selection:
@@ -160,11 +163,12 @@ the default captures the visible pane. Output must be a `.png` file. The JSON
 result includes `screenshot_path`, `freeze_path`, `freeze_config`, and
 `rasterizer`.
 
-After each feature or significant code change during a TUI task, retake a
-screenshot and visually examine the newly rendered image at least once. Do not
-reuse a pre-change screenshot as visual evidence. Visually sensitive tasks may
-render and inspect screenshots more often, such as after each
-meaningful layout, color, spacing, glyph, or interaction-state iteration.
+When `freeze` is available, retake a screenshot after each feature or significant
+code change during a TUI task and visually examine the newly rendered image at
+least once. Do not reuse a pre-change screenshot as visual evidence. Visually
+sensitive tasks may render and inspect screenshots more often, such as after each
+meaningful layout, color, spacing, glyph, or interaction-state iteration. When
+`freeze` is unavailable, continue with newly captured text and style evidence.
 
 ## Fine-Grained Inspection Workflow
 
@@ -207,8 +211,9 @@ python3 "$HARNESS" cell SESSION --row 16 --col 6
 - `read --number-lines --ruler`: Best option when you are choosing exact `row,col` targets.
 - `read --repr`: Best option when you need to inspect ANSI or control codes directly.
 - `read --tokens`: Best option when you need a structured token stream instead of manual ANSI parsing.
-- `screenshot`: Render a PNG for visual inspection. It requires `freeze` on
-  `PATH`; use an absolute `--output` path so the artifact is unambiguous.
+- `screenshot`: When `freeze` is on `PATH`, render a PNG for visual inspection;
+  use an absolute `--output` path so the artifact is unambiguous. Otherwise skip
+  this command and continue with text and style inspection.
 - `cell`: Best option for one exact coordinate. Look at `resolved_bg` and `resolved_fg` when selection or focus is color-driven.
 - `region --styles`: Best option when a whole row or pane header may have style changes.
 - `find-text --text "...":` Use before text-targeted mouse input or when you need exact spans for a selected label.
@@ -257,6 +262,8 @@ python3 "$HARNESS" diff SESSION --before before --after after --style-only --rep
 
 ### Render And Inspect A Raster Screenshot
 
+Run this only when `freeze` is available:
+
 ```bash
 python3 "$HARNESS" screenshot SESSION --output /absolute/path/pane.png
 ```
@@ -284,9 +291,9 @@ change; visually sensitive work may require this after every iteration.
 - Use `find-text` before coordinate-based clicks if the screen content is still moving.
 - Restart with a fixed size if the app layout depends on terminal dimensions.
 - Confirm `--cwd` is correct before assuming the app itself is broken.
-- If `screenshot` reports that `freeze` is unavailable, do not substitute a
-  text capture as raster evidence. Tell the user that `freeze` is required and
-  must be installed and available on `PATH`.
+- If `screenshot` reports that `freeze` is unavailable, proceed without it. Use
+  fresh text and style captures for the remaining inspection, and report the
+  raster-validation limitation only when it matters to the result.
 
 ## Operating Rules
 
@@ -296,8 +303,9 @@ change; visually sensitive work may require this after every iteration.
 - Use `cell`, `region`, and `diff --style-only` for exact selection-state evidence;
   complement them with `screenshot` when visual appearance matters.
 - After each feature or significant code change during a TUI task, retake and
-  visually re-examine at least one screenshot. Visually sensitive tasks may use
-  screenshots more often.
+  visually re-examine at least one screenshot when `freeze` is available.
+  Otherwise proceed with fresh text and style captures. Visually sensitive tasks
+  may use screenshots more often.
 - Keep one TUI per tmux session.
 - Use fixed dimensions during debugging so diffs are meaningful.
 
