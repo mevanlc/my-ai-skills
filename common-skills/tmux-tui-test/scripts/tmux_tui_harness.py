@@ -84,7 +84,7 @@ ANSI_COLORS = [
 ]
 BRIGHT_ANSI_COLORS = [f"bright-{name}" for name in ANSI_COLORS]
 SNAPSHOT_DIR = Path(tempfile.gettempdir()) / "tmux-tui-test-snapshots"
-FREEZE_RASTERIZERS = ("auto", "rsvg", "resvg", "sips", "chromium")
+FREEZE_RASTERIZERS = ("auto", "rsvg-pdf", "rsvg", "resvg", "sips", "chromium")
 
 # The harness runs on its OWN private tmux server (a dedicated `-L` socket) so it
 # can never resize, kill, or otherwise disturb the user's interactive tmux. This

@@ -32,6 +32,20 @@ class ScreenshotTests(unittest.TestCase):
         self.assertEqual(args.freeze_config, "terminal")
         self.assertEqual(args.rasterizer, "auto")
 
+    def test_parser_accepts_rsvg_pdf_rasterizer(self) -> None:
+        args = harness.build_parser().parse_args(
+            [
+                "screenshot",
+                "demo",
+                "--output",
+                "pane.png",
+                "--rasterizer",
+                "rsvg-pdf",
+            ]
+        )
+
+        self.assertEqual(args.rasterizer, "rsvg-pdf")
+
     def test_missing_freeze_explains_requirement_and_installation(self) -> None:
         with (
             mock.patch.object(harness.shutil, "which", return_value=None),

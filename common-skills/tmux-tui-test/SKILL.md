@@ -157,6 +157,15 @@ python3 "$HARNESS" screenshot SESSION \
   --scale 2
 ```
 
+Freeze's `rsvg-pdf` rasterizer preserves color emoji through librsvg's PDF
+rendering path. It requires both `rsvg-convert` and `pdftocairo` on `PATH`:
+
+```bash
+python3 "$HARNESS" screenshot SESSION \
+  --output /absolute/path/pane.png \
+  --rasterizer rsvg-pdf
+```
+
 Use `--freeze-config NAME` to select another freeze configuration. Use
 `--history N` or `--full-history` only when the image should include scrollback;
 the default captures the visible pane. Output must be a `.png` file. The JSON
