@@ -1,0 +1,308 @@
+#!/bin/sh
+
+# Poll a GitHub Actions run, stopping at the first previously unseen job or
+# step error. State is kept in a private temporary directory so a later
+# invocation can ignore errors that have already been reported.
+
+set -u
+
+program=${0##*/}
+poll_interval=${GH_RUN_POLL_INTERVAL:-10}
+state_root=${GH_RUN_POLL_STATE_DIR:-${TMPDIR:-/tmp}/gh-actions-run-poll}
+
+state_dir=
+continuation_token=
+run_finished=0
+
+usage() {
+    cat >&2 <<EOF
+Usage: $program [--continue XXXXXX] OWNER/REPO/RUN_ID
+       $program [--continue XXXXXX] https://github.com/OWNER/REPO/actions/runs/RUN_ID
+EOF
+}
+
+fail() {
+    printf '%s: %s\n' "$program" "$*" >&2
+    exit 2
+}
+
+on_exit() {
+    status=$?
+    trap - 0
+    if [ -n "$continuation_token" ] && [ "$run_finished" -eq 0 ]; then
+        printf '%s\n' "$continuation_token"
+    fi
+    exit "$status"
+}
+
+on_interrupt() {
+    printf '%s: interrupted while the run is still active\n' "$program" >&2
+    exit 130
+}
+
+on_terminate() {
+    printf '%s: terminated while the run is still active\n' "$program" >&2
+    exit 143
+}
+
+trap on_exit 0
+trap on_interrupt INT
+trap on_terminate HUP TERM
+
+continue_arg=
+target=
+
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --continue)
+            [ "$#" -ge 2 ] || {
+                usage
+                fail "--continue requires a six-character token"
+            }
+            [ -z "$continue_arg" ] || fail "--continue may only be supplied once"
+            continue_arg=$2
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            run_finished=1
+            exit 0
+            ;;
+        --)
+            shift
+            [ "$#" -eq 1 ] || {
+                usage
+                fail "expected exactly one run"
+            }
+            target=$1
+            shift
+            ;;
+        -*)
+            usage
+            fail "unknown option: $1"
+            ;;
+        *)
+            [ -z "$target" ] || {
+                usage
+                fail "expected exactly one run"
+            }
+            target=$1
+            shift
+            ;;
+    esac
+done
+
+[ -n "$target" ] || {
+    usage
+    fail "a workflow run is required"
+}
+
+case $poll_interval in
+    ''|*[!0-9]*) fail "GH_RUN_POLL_INTERVAL must be a non-negative integer" ;;
+esac
+
+if [ -n "$continue_arg" ]; then
+    case $continue_arg in
+        ??????) ;;
+        *) fail "continuation token must be exactly six characters" ;;
+    esac
+    case $continue_arg in
+        *[!A-Za-z0-9]*) fail "continuation token must be alphanumeric" ;;
+    esac
+fi
+
+case $target in
+    https://github.com/*/actions/runs/*)
+        path=${target#https://github.com/}
+        path=${path%/}
+        case $path in
+            */actions/runs/*) ;;
+            *) fail "invalid GitHub Actions run URL: $target" ;;
+        esac
+        owner_repo=${path%/actions/runs/*}
+        run_id=${path##*/actions/runs/}
+        case $owner_repo in
+            */*) owner=${owner_repo%%/*}; repo=${owner_repo#*/} ;;
+            *) fail "invalid GitHub Actions run URL: $target" ;;
+        esac
+        ;;
+    *)
+        old_ifs=$IFS
+        IFS=/
+        read -r owner repo run_id extra <<EOF
+$target/
+EOF
+        IFS=$old_ifs
+        [ -z "$extra" ] || fail "run must have the form OWNER/REPO/RUN_ID"
+        ;;
+esac
+
+case $owner in
+    ''|*[!A-Za-z0-9-]*) fail "invalid GitHub owner: $owner" ;;
+esac
+case $repo in
+    ''|*[!A-Za-z0-9_.-]*) fail "invalid GitHub repository: $repo" ;;
+esac
+case $run_id in
+    ''|*[!0-9]*) fail "run ID must contain only digits" ;;
+esac
+
+command -v gh >/dev/null 2>&1 || fail "gh is not on PATH"
+
+canonical_url=https://github.com/$owner/$repo/actions/runs/$run_id
+state_parent=$state_root/$owner/$repo
+umask 077
+mkdir -p "$state_parent" || fail "could not create state directory: $state_parent"
+
+if [ -n "$continue_arg" ]; then
+    candidate_state_dir=$state_parent/$run_id.$continue_arg
+    [ -d "$candidate_state_dir" ] || fail "no saved state for $canonical_url and token $continue_arg"
+    [ -f "$candidate_state_dir/target" ] || fail "saved state is missing its target metadata"
+    saved_target=
+    IFS= read -r saved_target < "$candidate_state_dir/target" || :
+    [ "$saved_target" = "$canonical_url" ] || fail "saved state belongs to a different run"
+    state_dir=$candidate_state_dir
+    continuation_token=$continue_arg
+else
+    state_dir=$(mktemp -d "$state_parent/$run_id.XXXXXX") || \
+        fail "could not create state for $canonical_url"
+    continuation_token=${state_dir##*.}
+    printf '%s\n' "$canonical_url" > "$state_dir/target" || fail "could not initialize saved state"
+    : > "$state_dir/seen-errors" || fail "could not initialize saved state"
+fi
+
+[ -f "$state_dir/seen-errors" ] || : > "$state_dir/seen-errors" || \
+    fail "could not initialize the error history"
+
+refresh_run() {
+    run_info=$(gh api \
+        --jq '[.status, (.conclusion // "-"), .html_url] | join("|")' \
+        "repos/$owner/$repo/actions/runs/$run_id") || \
+        fail "could not query $canonical_url"
+
+    old_ifs=$IFS
+    IFS='|'
+    read -r run_status run_conclusion run_url run_extra <<EOF
+$run_info
+EOF
+    IFS=$old_ifs
+    [ -n "$run_status" ] || fail "GitHub returned an empty run status"
+    [ -z "$run_extra" ] || fail "GitHub returned an invalid run response"
+}
+
+finish_if_completed() {
+    [ "$run_status" = completed ] || return 1
+
+    run_finished=1
+    if ! rm -rf -- "$state_dir"; then
+        printf '%s: warning: could not remove completed-run state: %s\n' \
+            "$program" "$state_dir" >&2
+    fi
+
+    case $run_conclusion in
+        success|neutral|skipped)
+            printf '%s: run completed with conclusion %s: %s\n' \
+                "$program" "$run_conclusion" "$run_url" >&2
+            exit 0
+            ;;
+        -|'')
+            printf '%s: run completed without a conclusion: %s\n' \
+                "$program" "$run_url" >&2
+            exit 2
+            ;;
+        *)
+            printf '%s: run completed with conclusion %s: %s\n' \
+                "$program" "$run_conclusion" "$run_url" >&2
+            exit 1
+            ;;
+    esac
+}
+
+find_job_errors() {
+    # The dollar-prefixed names below are jq variables, not shell variables.
+    # shellcheck disable=SC2016
+    gh api --paginate \
+        --jq '
+            def is_error:
+                .status == "completed"
+                and .conclusion != null
+                and ((.conclusion == "success"
+                      or .conclusion == "neutral"
+                      or .conclusion == "skipped") | not);
+
+            .jobs[] |
+            . as $job |
+            [($job.steps // [])[] | select(is_error)] as $bad_steps |
+            if ($bad_steps | length) > 0 then
+                $bad_steps[] |
+                ["step:\($job.id):\(.number):\(.conclusion)",
+                 "step",
+                 ($job.id | tostring),
+                 (.number | tostring),
+                 (if ($job.name // "") == "" then "-" else $job.name end),
+                 (if (.name // "") == "" then "-" else .name end),
+                 .conclusion,
+                 ($job.html_url // "-")] | @tsv
+            elif ($job | is_error) then
+                ["job:\($job.id):\($job.conclusion)",
+                 "job",
+                 ($job.id | tostring),
+                 "-",
+                 (if ($job.name // "") == "" then "-" else $job.name end),
+                 "-",
+                 $job.conclusion,
+                 ($job.html_url // "-")] | @tsv
+            else
+                empty
+            end
+        ' \
+        "repos/$owner/$repo/actions/runs/$run_id/jobs?per_page=100"
+}
+
+report_unseen_errors() {
+    error_lines=$1
+    found_unseen_error=0
+    tab=$(printf '\t')
+
+    while IFS="$tab" read -r error_id error_kind job_id step_number job_name item_name conclusion details_url; do
+        [ -n "$error_id" ] || continue
+        if grep -Fqx "$error_id" "$state_dir/seen-errors"; then
+            continue
+        fi
+
+        printf '%s\n' "$error_id" >> "$state_dir/seen-errors" || \
+            fail "could not update the error history"
+        found_unseen_error=1
+
+        if [ "$error_kind" = step ]; then
+            printf '%s: step %s (%s) in job %s (%s) concluded %s\n' \
+                "$program" "$item_name" "$step_number" "$job_name" "$job_id" "$conclusion" >&2
+        else
+            printf '%s: job %s (%s) concluded %s\n' \
+                "$program" "$job_name" "$job_id" "$conclusion" >&2
+        fi
+        [ "$details_url" = - ] || printf '%s: details: %s\n' "$program" "$details_url" >&2
+    done <<EOF
+$error_lines
+EOF
+
+    [ "$found_unseen_error" -eq 1 ]
+}
+
+while :; do
+    refresh_run
+    finish_if_completed || :
+
+    job_errors=$(find_job_errors) || fail "could not query jobs for $canonical_url"
+    if report_unseen_errors "$job_errors"; then
+        # Avoid issuing a continuation token if the workflow completed between
+        # the run and jobs requests.
+        refresh_run
+        finish_if_completed || :
+        printf '%s: stopping at a new run error; continue with --continue %s\n' \
+            "$program" "$continuation_token" >&2
+        exit 1
+    fi
+
+    sleep "$poll_interval" || fail "polling sleep failed"
+done

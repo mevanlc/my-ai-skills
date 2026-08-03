@@ -1,0 +1,4 @@
+interface:
+  display_name: "Poll GitHub Actions Run"
+  short_description: "Poll Actions runs and resume after errors"
+  default_prompt: "Use $poll-gh-actions-run to monitor this GitHub Actions run and stop at new errors."
