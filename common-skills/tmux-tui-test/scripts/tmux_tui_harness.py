@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import re
 import shlex
 import shutil
@@ -85,6 +86,7 @@ ANSI_COLORS = [
 BRIGHT_ANSI_COLORS = [f"bright-{name}" for name in ANSI_COLORS]
 SNAPSHOT_DIR = Path(tempfile.gettempdir()) / "tmux-tui-test-snapshots"
 FREEZE_RASTERIZERS = ("auto", "rsvg-pdf", "rsvg", "resvg", "sips", "chromium")
+FREEZE_EXEC = Path(__file__).with_name("freeze_exec.sh")
 
 # The harness runs on its OWN private tmux server (a dedicated `-L` socket) so it
 # can never resize, kill, or otherwise disturb the user's interactive tmux. This
@@ -1222,8 +1224,17 @@ def require_freeze() -> str:
     return freeze
 
 
+def require_freeze_exec() -> str:
+    if not FREEZE_EXEC.is_file():
+        raise HarnessError(f"freeze exec helper is missing: {FREEZE_EXEC}")
+    if not os.access(FREEZE_EXEC, os.X_OK):
+        raise HarnessError(f"freeze exec helper is not executable: {FREEZE_EXEC}")
+    return str(FREEZE_EXEC)
+
+
 def cmd_screenshot(args: argparse.Namespace) -> None:
     freeze = require_freeze()
+    freeze_exec = require_freeze_exec()
     output = Path(args.output).expanduser().resolve()
     if output.suffix.lower() != ".png":
         raise HarnessError(
@@ -1242,7 +1253,7 @@ def cmd_screenshot(args: argparse.Namespace) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
 
     command = [
-        freeze,
+        freeze_exec,
         "-c",
         args.freeze_config,
         "--rasterizer",
@@ -1253,12 +1264,15 @@ def cmd_screenshot(args: argparse.Namespace) -> None:
     command.extend(["-o", str(output)])
 
     try:
+        environment = os.environ.copy()
+        environment["FREEZE_BIN"] = freeze
         completed = subprocess.run(
             command,
             input=ansi_text,
             capture_output=True,
             text=True,
             check=False,
+            env=environment,
         )
     except OSError as exc:
         raise HarnessError(f"failed to run freeze for raster screenshot: {exc}") from exc

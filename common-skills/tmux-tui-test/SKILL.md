@@ -9,7 +9,8 @@ Use `tmux` as the TTY backend for interactive terminal apps. Prefer the bundled 
 
 ## Harness Location
 
-The harness script is at `scripts/tmux_tui_harness.py` within this skill directory. Set `HARNESS` once per session:
+The harness and Freeze execution helper are in `scripts/` within this skill
+directory. Set their paths once per session:
 
 ```bash
 # Resolve from whichever skills directory has the symlink
@@ -18,9 +19,10 @@ if [ -f ~/.claude/skills/tmux-tui-test/scripts/tmux_tui_harness.py ]; then
 elif [ -f ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py ]; then
   HARNESS=~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py
 fi
+FREEZE_EXEC="$(dirname "$HARNESS")/freeze_exec.sh"
 ```
 
-All examples below use `$HARNESS`.
+All examples below use `$HARNESS`; direct Freeze examples use `$FREEZE_EXEC`.
 
 ## Server Isolation (important when you run inside tmux)
 
@@ -119,7 +121,8 @@ python3 "$HARNESS" stop SESSION
 
 - `read` returns the rendered pane contents, not a screenshot and not a raw PTY transcript.
 - `screenshot` captures the current pane with ANSI styles and preserved trailing
-  spaces, then pipes it to `freeze -c terminal` to produce a PNG.
+  spaces, then pipes it through `freeze_exec.sh` to run
+  `freeze --language ansi -c terminal` and produce a PNG.
 - `read` preserves ANSI escape codes by default so color and style state remain visible.
 - Use `--plain` when you want stripped text that is easier to reason over.
 - `read --lines`, `read --cols`, `--number-lines`, and `--ruler` help isolate and target specific cells.
@@ -141,11 +144,33 @@ on installing it. Use fresh text captures and fine-grained style inspection
 instead, and mention the missing raster validation when visual appearance is
 material to the result.
 
+The harness automatically invokes the bundled `freeze_exec.sh` helper. The
+helper resolves `freeze` from `PATH`, adds the explicit `--language ansi` needed
+when rendering an ANSI pane capture from standard input, and forwards all other
+arguments unchanged. This avoids `Language Unknown; specify a language with
+--language` failures from Freeze versions that do not infer ANSI input.
+
 Render the visible pane using the `terminal` freeze template and automatic
 rasterizer selection:
 
 ```bash
 python3 "$HARNESS" screenshot SESSION --output /absolute/path/pane.png
+```
+
+To render an already captured ANSI file directly, use the same helper:
+
+```bash
+"$FREEZE_EXEC" -c terminal --rasterizer auto \
+  -o /absolute/path/pane.png < /absolute/path/pane.ansi
+```
+
+The helper normally finds `freeze` with `which`. To select a particular
+installation, set `FREEZE_BIN` to its executable path:
+
+```bash
+FREEZE_BIN=/absolute/path/to/freeze \
+  "$FREEZE_EXEC" -c terminal -o /absolute/path/pane.png \
+  < /absolute/path/pane.ansi
 ```
 
 Select a rasterizer or output scale when needed:
@@ -221,8 +246,9 @@ python3 "$HARNESS" cell SESSION --row 16 --col 6
 - `read --repr`: Best option when you need to inspect ANSI or control codes directly.
 - `read --tokens`: Best option when you need a structured token stream instead of manual ANSI parsing.
 - `screenshot`: When `freeze` is on `PATH`, render a PNG for visual inspection;
-  use an absolute `--output` path so the artifact is unambiguous. Otherwise skip
-  this command and continue with text and style inspection.
+  the harness uses `freeze_exec.sh` to identify stdin as ANSI. Use an absolute
+  `--output` path so the artifact is unambiguous. Otherwise skip this command and
+  continue with text and style inspection.
 - `cell`: Best option for one exact coordinate. Look at `resolved_bg` and `resolved_fg` when selection or focus is color-driven.
 - `region --styles`: Best option when a whole row or pane header may have style changes.
 - `find-text --text "...":` Use before text-targeted mouse input or when you need exact spans for a selected label.
@@ -323,4 +349,5 @@ change; visually sensitive work may require this after every iteration.
 ### scripts/
 
 - `tmux_tui_harness.py`: JSON CLI wrapper around `tmux` for launching, inspecting, targeting, snapshotting, raster screenshotting, and diffing interactive terminal apps.
+- `freeze_exec.sh`: Resolve and execute Freeze with ANSI stdin explicitly selected while forwarding the harness's rendering arguments.
 - `test_tmux_tui_harness.py`: Unit coverage for the raster screenshot command and its dependency/error contracts.

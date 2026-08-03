@@ -1,4 +1,5 @@
 import argparse
+import os
 import subprocess
 import tempfile
 import unittest
@@ -6,6 +7,8 @@ from pathlib import Path
 from unittest import mock
 
 import tmux_tui_harness as harness
+
+FREEZE_EXEC = Path(__file__).with_name("freeze_exec.sh")
 
 
 def screenshot_args(output: Path, **overrides: object) -> argparse.Namespace:
@@ -104,7 +107,7 @@ class ScreenshotTests(unittest.TestCase):
             self.assertEqual(
                 command,
                 [
-                    "/opt/bin/freeze",
+                    str(FREEZE_EXEC),
                     "-c",
                     "terminal",
                     "--rasterizer",
@@ -114,6 +117,9 @@ class ScreenshotTests(unittest.TestCase):
                     "-o",
                     str(resolved_output),
                 ],
+            )
+            self.assertEqual(
+                run.call_args.kwargs["env"]["FREEZE_BIN"], "/opt/bin/freeze"
             )
             self.assertEqual(run.call_args.kwargs["input"], ansi_text)
             payload = emit.call_args.args[0]
@@ -142,6 +148,49 @@ class ScreenshotTests(unittest.TestCase):
                 ),
             ):
                 harness.cmd_screenshot(screenshot_args(output))
+
+
+class FreezeExecTests(unittest.TestCase):
+    def test_helper_forces_ansi_language_and_forwards_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fake_freeze = Path(temp_dir) / "freeze"
+            fake_freeze.write_text(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\"\n",
+                encoding="utf-8",
+            )
+            fake_freeze.chmod(0o755)
+            environment = os.environ.copy()
+            environment.pop("FREEZE_BIN", None)
+            environment["PATH"] = f"{temp_dir}{os.pathsep}{environment['PATH']}"
+
+            completed = subprocess.run(
+                [str(FREEZE_EXEC), "-c", "terminal", "-o", "pane.png"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=environment,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            completed.stdout.splitlines(),
+            ["--language", "ansi", "-c", "terminal", "-o", "pane.png"],
+        )
+
+    def test_helper_reports_invalid_explicit_executable(self) -> None:
+        environment = os.environ.copy()
+        environment["FREEZE_BIN"] = "/missing/freeze"
+
+        completed = subprocess.run(
+            [str(FREEZE_EXEC)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=environment,
+        )
+
+        self.assertEqual(completed.returncode, 126)
+        self.assertIn("freeze executable is not executable", completed.stderr)
 
 
 if __name__ == "__main__":
