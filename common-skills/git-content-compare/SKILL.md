@@ -1,9 +1,9 @@
 ---
-name: git-content-equivalence
+name: git-content-compare
 description: Use when the user mentions the skill.
 ---
 
-# Git Content Equivalence
+# Git Content Equivalence / Divergence Analysis / Content Comparison
 
 Use this skill when branch or repo history may have been rewritten, so commit IDs diverge much earlier than the meaningful file-content divergence.
 
