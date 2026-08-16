@@ -39,17 +39,17 @@ The path is the part after the first space.
 
 ## Remote Workflow (not on the phone)
 
-The phone runs Termux with an SSH server reachable via the host alias `android.local`.
-If `android.local` is not reachable, try the hostname `phone` to attempt over tailscale.
-This skill assumes `~/.ssh/config` is already set up correctly for that alias (port,
-identity/key, and any other options), so plain `ssh android.local` / `scp` just work —
+The phone runs Termux with an SSH server reachable via the host alias `phone` (e.g. over Tailscale).
+If `phone` is not reachable, fall back to `android.local` or `android`.
+This skill assumes `~/.ssh/config` is already set up correctly for those aliases (port,
+identity/key, and any other options), so plain `ssh phone` / `scp` just work —
 do not pass `-p`/`-P`, `-i`, or other connection flags. Run the find command remotely
 to locate the newest screenshot, then copy it down locally.
 
-1. Find the newest screenshot on the phone over SSH:
+1. Find the newest screenshot on the phone over SSH (try `phone` first, falling back to `android.local` or `android` if unreachable):
 
    ```bash
-   ssh android.local 'find /storage/emulated/0/DCIM/Screenshots -maxdepth 1 -type f -printf "%T@ %p\n" | sort -nr | head -n 1'
+   ssh phone 'find /storage/emulated/0/DCIM/Screenshots -maxdepth 1 -type f -printf "%T@ %p\n" | sort -nr | head -n 1'
    ```
 
    The remote path is the part after the first space. If the command returns
@@ -59,7 +59,7 @@ to locate the newest screenshot, then copy it down locally.
    the original filename):
 
    ```bash
-   scp android.local:"/storage/emulated/0/DCIM/Screenshots/<filename>" /tmp/
+   scp phone:"/storage/emulated/0/DCIM/Screenshots/<filename>" /tmp/
    ```
 
 3. View the local copy with the environment's image-reading tool.
