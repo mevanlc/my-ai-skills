@@ -9,6 +9,7 @@ This repository contains reusable skills grouped by target environment.
 | `screenshot-based-visual-refactoring` | `common-skills/screenshot-based-visual-refactoring` | Diff current and target UI screenshots by semantic region, then implement the refactor until the deltas close. |
 | `aar` | `common-skills/aar` | Generate an AI After Action Report in small, medium, or large format for handoff, retrospectives, or lesson capture. |
 | `app-automation-macos` | `common-skills/app-automation-macos` | Choose macOS GUI automation approaches across `.app` packaging, accessibility trees, computer-use, macos-mcp, AppleScript, shell, and Swift AX probes. |
+| `explain-uncommitted` | `common-skills/explain-uncommitted` | Explain the content, purpose, and likely intent of uncommitted Git changes with adaptive, detailed, brief, or freeform guidance. |
 | `forkify-readme` | `common-skills/forkify-readme` | Replace copied upstream documentation with a concise, evidence-backed README for a maintained fork. |
 | `git-content-equivalence` | `common-skills/git-content-equivalence` | Analyze rewritten Git history to separate metadata-only divergence from real content changes and recommend a safe replay strategy. |
 | `github-pat-creation` | `common-skills/github-pat-creation` | Create prefilled GitHub personal access token setup links based on the user’s intended permissions and workflow. |
