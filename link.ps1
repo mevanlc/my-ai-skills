@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Link skills from this repo into ~/.claude/ and ~/.codex/.
+    Link skills from this repo into ~/.claude/, ~/.codex/, and ~/.gemini/antigravity-cli/.
 
 .DESCRIPTION
     PowerShell variant of link.sh. Creates Windows junction points via
@@ -17,6 +17,15 @@
 .PARAMETER Prune
     Only remove dead links that point into this repo.
 
+.PARAMETER NoClaude
+    Skip linking and pruning for Claude (~/.claude/skills).
+
+.PARAMETER NoCodex
+    Skip linking and pruning for Codex (~/.codex/skills).
+
+.PARAMETER NoGemini
+    Skip linking and pruning for Gemini (~/.gemini/antigravity-cli/skills).
+
 .EXAMPLE
     ./link.ps1
 
@@ -28,12 +37,18 @@
 
 .EXAMPLE
     ./link.ps1 -Prune
+
+.EXAMPLE
+    ./link.ps1 -NoClaude -NoCodex
 #>
 [CmdletBinding()]
 param(
     [switch]$DryRun,
     [switch]$Unlink,
-    [switch]$Prune
+    [switch]$Prune,
+    [switch]$NoClaude,
+    [switch]$NoCodex,
+    [switch]$NoGemini
 )
 
 $ErrorActionPreference = 'Stop'
@@ -166,8 +181,9 @@ function Invoke-PruneDirectory {
 
 function Invoke-PruneAll {
     Write-Host "=== Prune dead links ==="
-    Invoke-PruneDirectory "$HOME/.claude/skills"
-    Invoke-PruneDirectory "$HOME/.codex/skills"
+    if (-not $NoClaude) { Invoke-PruneDirectory "$HOME/.claude/skills" }
+    if (-not $NoCodex)  { Invoke-PruneDirectory "$HOME/.codex/skills" }
+    if (-not $NoGemini) { Invoke-PruneDirectory "$HOME/.gemini/antigravity-cli/skills" }
 }
 
 if ($Prune) {
@@ -177,30 +193,49 @@ if ($Prune) {
     return
 }
 
-# --- Common skills (installed to both Claude and Codex) ---
-Write-Host "=== Common skills ==="
-New-Item -ItemType Directory -Path "$HOME/.claude/skills" -Force | Out-Null
-New-Item -ItemType Directory -Path "$HOME/.codex/skills" -Force | Out-Null
-foreach ($item in Get-ChildItem -LiteralPath "$Repo/common-skills" -Directory) {
-    $name = $item.Name
-    Invoke-Link -Source "$Repo/common-skills/$name" -Destination "$HOME/.claude/skills/$name"
-    Invoke-Link -Source "$Repo/common-skills/$name" -Destination "$HOME/.codex/skills/$name"
+# --- Common skills (installed to Claude, Codex, and Gemini) ---
+if (-not $NoClaude -or -not $NoCodex -or -not $NoGemini) {
+    Write-Host "=== Common skills ==="
+    if (-not $DryRun -and -not $Unlink) {
+        if (-not $NoClaude) { New-Item -ItemType Directory -Path "$HOME/.claude/skills" -Force | Out-Null }
+        if (-not $NoCodex)  { New-Item -ItemType Directory -Path "$HOME/.codex/skills" -Force | Out-Null }
+        if (-not $NoGemini) { New-Item -ItemType Directory -Path "$HOME/.gemini/antigravity-cli/skills" -Force | Out-Null }
+    }
+    foreach ($item in Get-ChildItem -LiteralPath "$Repo/common-skills" -Directory) {
+        $name = $item.Name
+        if (-not $NoClaude) { Invoke-Link -Source "$Repo/common-skills/$name" -Destination "$HOME/.claude/skills/$name" }
+        if (-not $NoCodex)  { Invoke-Link -Source "$Repo/common-skills/$name" -Destination "$HOME/.codex/skills/$name" }
+        if (-not $NoGemini) { Invoke-Link -Source "$Repo/common-skills/$name" -Destination "$HOME/.gemini/antigravity-cli/skills/$name" }
+    }
 }
 
 # --- Claude-only skills ---
-Write-Host "=== Claude skills ==="
-foreach ($item in Get-ChildItem -LiteralPath "$Repo/claude-skills" -Directory) {
-    $name = $item.Name
-    if ($name -eq 'skills') { continue }  # skip nested 'skills' dir if present
-    if ($SkipClaudeSkills -contains $name) { continue }
-    Invoke-Link -Source "$Repo/claude-skills/$name" -Destination "$HOME/.claude/skills/$name"
+if (-not $NoClaude -and (Test-Path -LiteralPath "$Repo/claude-skills" -PathType Container)) {
+    Write-Host "=== Claude skills ==="
+    foreach ($item in Get-ChildItem -LiteralPath "$Repo/claude-skills" -Directory) {
+        $name = $item.Name
+        if ($name -eq 'skills') { continue }  # skip nested 'skills' dir if present
+        if ($SkipClaudeSkills -contains $name) { continue }
+        Invoke-Link -Source "$Repo/claude-skills/$name" -Destination "$HOME/.claude/skills/$name"
+    }
 }
 
 # --- Codex-only skills ---
-Write-Host "=== Codex skills ==="
-foreach ($item in Get-ChildItem -LiteralPath "$Repo/codex-skills" -Directory) {
-    $name = $item.Name
-    Invoke-Link -Source "$Repo/codex-skills/$name" -Destination "$HOME/.codex/skills/$name"
+if (-not $NoCodex -and (Test-Path -LiteralPath "$Repo/codex-skills" -PathType Container)) {
+    Write-Host "=== Codex skills ==="
+    foreach ($item in Get-ChildItem -LiteralPath "$Repo/codex-skills" -Directory) {
+        $name = $item.Name
+        Invoke-Link -Source "$Repo/codex-skills/$name" -Destination "$HOME/.codex/skills/$name"
+    }
+}
+
+# --- Gemini-only skills ---
+if (-not $NoGemini -and (Test-Path -LiteralPath "$Repo/gemini-skills" -PathType Container)) {
+    Write-Host "=== Gemini skills ==="
+    foreach ($item in Get-ChildItem -LiteralPath "$Repo/gemini-skills" -Directory) {
+        $name = $item.Name
+        Invoke-Link -Source "$Repo/gemini-skills/$name" -Destination "$HOME/.gemini/antigravity-cli/skills/$name"
+    }
 }
 
 Invoke-PruneAll
