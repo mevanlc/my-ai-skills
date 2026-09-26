@@ -1,0 +1,3 @@
+interface:
+  display_name: "Prune Merged Branches"
+  short_description: "Delete merged local and remote branches in one remote"
