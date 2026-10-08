@@ -13,7 +13,7 @@ import tempfile
 import time
 import unicodedata
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -36,6 +36,26 @@ class CapturedScreen:
     rows: List[List[Dict[str, Any]]]
     width: int
     height: int
+
+
+@dataclass
+class CellPolicy:
+    widths: Dict[str, int] = field(default_factory=dict)
+    variation_selector_wide: bool = True
+
+
+@dataclass
+class ObservedFrame:
+    screen: CapturedScreen
+    rows: List[List[Dict[str, Any]]]
+    row_range: Tuple[int, int]
+    col_range: Tuple[int, int]
+
+
+@dataclass
+class Observation:
+    baseline: ObservedFrame
+    policy: CellPolicy
 
 
 BUTTON_CODES = {
@@ -444,18 +464,122 @@ def tokenize_ansi(text: str) -> List[Dict[str, Any]]:
 
 
 def char_width(char: str) -> int:
-    if char == "\u200d":
+    """Offline default; live captures obtain non-ASCII widths from tmux."""
+    if unicodedata.category(char) in ("Mn", "Me", "Cf"):
         return 0
-    if unicodedata.combining(char):
-        return 0
-    return 1
+    if 0x1F1E6 <= ord(char) <= 0x1F1FF:
+        return 1
+    return 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+
+
+def update_cell_policy(
+    policy: CellPolicy, tokens: List[Dict[str, Any]], target: str
+) -> None:
+    # Ask the selected server, including its codepoint-widths overrides. Batch
+    # unique codepoints, not one subprocess per cell. No external Python deps.
+    missing = sorted(
+        {
+            char
+            for token in tokens
+            if token["type"] == "text"
+            for char in token["text"]
+            if ord(char) > 127 and char not in policy.widths
+        }
+    )
+    for offset in range(0, len(missing), 256):
+        chars = missing[offset : offset + 256]
+        fmt = "\t".join(
+            [
+                "#{variation-selector-always-wide}",
+                *["#{w:#{l:" + char + "}}" for char in chars],
+            ]
+        )
+        values = run_tmux(
+            ["display-message", "-p", "-t", target, "-F", fmt]
+        ).stdout.split("\t")
+        if len(values) != len(chars) + 1 or any(
+            value not in ("0", "1", "2") for value in values[1:]
+        ):
+            raise HarnessError("tmux did not report valid Unicode cell widths")
+        policy.variation_selector_wide = values[0] == "1"
+        policy.widths.update(zip(chars, map(int, values[1:])))
+
+
+# Emoji modifier bases recognized by tmux's utf8-combined.c. These are cell
+# combining rules, not general Unicode grapheme segmentation.
+EMOJI_MODIFIER_BASES = {
+    *range(0x1F44B, 0x1F451),
+    *range(0x1F466, 0x1F46A),
+    0x1F46E,
+    *range(0x1F470, 0x1F479),
+    0x1F47C,
+    *range(0x1F481, 0x1F484),
+    *range(0x1F485, 0x1F488),
+    0x1F4AA,
+    0x1F575,
+    0x1F57A,
+    0x1F590,
+    0x1F595,
+    0x1F596,
+    *range(0x1F645, 0x1F648),
+    *range(0x1F64B, 0x1F650),
+    *range(0x1F6B4, 0x1F6B7),
+    0x1F926,
+    *range(0x1F937, 0x1F93A),
+    0x1F93D,
+    0x1F93E,
+    0x1F9B5,
+    0x1F9B6,
+    0x1F9B8,
+    0x1F9B9,
+    *range(0x1F9CD, 0x1F9D0),
+    *range(0x1F9D1, 0x1F9E0),
+}
+
+
+def hangul_class(char: str) -> Optional[str]:
+    code = ord(char)
+    if 0x1100 <= code <= 0x115F or 0xA960 <= code <= 0xA97C:
+        return "L"
+    if 0x1160 <= code <= 0x11A7 or 0xD7B0 <= code <= 0xD7C6:
+        return "V"
+    if 0x11A8 <= code <= 0x11FF or 0xD7CB <= code <= 0xD7FB:
+        return "T"
+    return None
+
+
+def combine_cell(
+    previous: str, char: str, width: int, policy: CellPolicy
+) -> Tuple[bool, bool]:
+    """Return (combine, force-wide), following tmux screen-write combining."""
+    if width == 0 or char in ("\u200d", "\ufe0f"):
+        return True, char == "\ufe0f" and policy.variation_selector_wide
+    if ord(char) < 128:
+        return False, False
+    kind = hangul_class(char)
+    if kind is not None:
+        return (kind, hangul_class(previous[-1])) in (("V", "L"), ("T", "V")), False
+
+    def regional(c: str) -> bool:
+        return 0x1F1E6 <= ord(c) <= 0x1F1FF
+
+    flag_pair = (
+        regional(char) and regional(previous[0]) and sum(map(regional, previous)) == 1
+    )
+    modifier = (
+        ord(previous[0]) in EMOJI_MODIFIER_BASES and 0x1F3FB <= ord(char) <= 0x1F3FF
+    ) or (ord(char) in EMOJI_MODIFIER_BASES and 0x1F3FB <= ord(previous[0]) <= 0x1F3FF)
+    return flag_pair or modifier or previous.endswith("\u200d"), flag_pair or modifier
 
 
 def build_rows_from_tokens(
-    tokens: List[Dict[str, Any]], width_hint: Optional[int]
+    tokens: List[Dict[str, Any]],
+    width_hint: Optional[int],
+    cell_policy: Optional[CellPolicy] = None,
 ) -> List[List[Dict[str, Any]]]:
     rows: List[List[Dict[str, Any]]] = [[]]
     style = default_style()
+    policy = cell_policy or CellPolicy()
 
     def current_row() -> List[Dict[str, Any]]:
         return rows[-1]
@@ -472,13 +596,36 @@ def build_rows_from_tokens(
             if char == "\n":
                 rows.append([])
                 continue
-            width = char_width(char)
-            if width == 0 and current_row():
-                current_row()[-1]["char"] += char
+            if char == "\u3164":
                 continue
-            current_row().append(
+            width = policy.widths.get(char, char_width(char))
+            row = current_row()
+            lead = len(row) - 1
+            while lead >= 0 and row[lead]["continuation"]:
+                lead -= 1
+            if lead >= 0:
+                previous = row[lead]["char"]
+                combine, force_wide = combine_cell(previous, char, width, policy)
+                if combine and len((previous + char).encode("utf-8")) <= 32:
+                    row[lead]["char"] += char
+                    if force_wide and len(row) - lead == 1:
+                        row.append(
+                            {
+                                "char": "",
+                                "style": clone_style(row[lead]["style"]),
+                                "continuation": True,
+                            }
+                        )
+                    continue
+            if width == 0 or hangul_class(char) in ("V", "T"):
+                continue
+            row.append(
                 {"char": char, "style": clone_style(style), "continuation": False}
             )
+            for _ in range(1, width):
+                row.append(
+                    {"char": "", "style": clone_style(style), "continuation": True}
+                )
 
     if rows and rows[-1] == []:
         rows.pop()
@@ -499,6 +646,7 @@ def capture_screen(
     *,
     start_line: Optional[str] = None,
     end_line: Optional[str] = None,
+    cell_policy: Optional[CellPolicy] = None,
 ) -> CapturedScreen:
     info = pane_info(session)
     width_hint = parse_dimension(info["width"], "width")
@@ -506,7 +654,9 @@ def capture_screen(
         session, ansi=True, start_line=start_line, end_line=end_line
     )
     tokens = tokenize_ansi(ansi_text)
-    rows = build_rows_from_tokens(tokens, width_hint=width_hint)
+    policy = cell_policy or CellPolicy()
+    update_cell_policy(policy, tokens, session)
+    rows = build_rows_from_tokens(tokens, width_hint=width_hint, cell_policy=policy)
     width = width_hint
     height = len(rows)
     return CapturedScreen(
@@ -623,17 +773,32 @@ def crop_rows(
     col_start, col_end = col_range
     cropped: List[List[Dict[str, Any]]] = []
     for row in rows[row_start - 1 : row_end]:
-        cropped.append(
-            [
+        extracted = []
+        for index in range(col_start - 1, min(col_end, len(row))):
+            cell = row[index]
+            lead, end = glyph_span(row, index)
+            clipped = lead < col_start - 1 or end >= col_end
+            extracted.append(
                 {
-                    "char": cell["char"],
+                    "char": " " if clipped else cell["char"],
                     "style": clone_style(cell["style"]),
-                    "continuation": cell.get("continuation", False),
+                    "continuation": False
+                    if clipped
+                    else cell.get("continuation", False),
                 }
-                for cell in row[col_start - 1 : col_end]
-            ]
-        )
+            )
+        cropped.append(extracted)
     return cropped
+
+
+def glyph_span(row: List[Dict[str, Any]], index: int) -> Tuple[int, int]:
+    lead = index
+    while lead > 0 and row[lead].get("continuation", False):
+        lead -= 1
+    end = lead
+    while end + 1 < len(row) and row[end + 1].get("continuation", False):
+        end += 1
+    return lead, end
 
 
 def visible_repr_char(char: str) -> str:
@@ -676,6 +841,7 @@ def display_text(
     *,
     start_row: int,
     start_col: int,
+    end_col: int,
     number_lines: bool,
     ruler: bool,
     repr_mode: bool,
@@ -691,7 +857,6 @@ def display_text(
 
     if ruler and lines:
         prefix = " " * prefix_width
-        end_col = start_col + max(len(line) for line in lines) - 1
         for ruler_line in build_ruler_lines(start_col, end_col):
             output.append(f"{prefix}{ruler_line}")
 
@@ -749,8 +914,8 @@ def ensure_cell_bounds(screen: CapturedScreen, row: int, col: int, label: str) -
         raise HarnessError(f"{label} col={col} is outside 1:{screen.width}")
 
 
-def find_matches_in_lines(
-    lines: List[str],
+def find_matches_in_rows(
+    rows: List[List[Dict[str, Any]]],
     needle: str,
     *,
     ignore_case: bool = False,
@@ -758,26 +923,30 @@ def find_matches_in_lines(
 ) -> List[Dict[str, Any]]:
     if needle == "":
         raise HarnessError("search text must not be empty")
-    haystack_lines = lines
-    search_needle = needle
-    if ignore_case:
-        haystack_lines = [line.lower() for line in lines]
-        search_needle = needle.lower()
+    search_needle = needle.casefold() if ignore_case else needle
 
     matches: List[Dict[str, Any]] = []
-    for row_index, haystack in enumerate(haystack_lines, start=1):
+    for row_index, row in enumerate(rows, start=1):
+        pieces, starts, ends = [], [], []
+        for index, cell in enumerate(row):
+            text = cell["char"].casefold() if ignore_case else cell["char"]
+            _, end = glyph_span(row, index)
+            pieces.append(text)
+            starts.extend([index + 1] * len(text))
+            ends.extend([end + 1] * len(text))
+        haystack = "".join(pieces)
         start = 0
         while True:
             found = haystack.find(search_needle, start)
             if found == -1:
                 break
-            start_col = found + 1
-            end_col = found + len(search_needle)
+            start_col = starts[found]
+            end_col = ends[found + len(search_needle) - 1]
             match = {
                 "row": row_index,
                 "start_col": start_col,
                 "end_col": end_col,
-                "line": lines[row_index - 1],
+                "line": "".join(cell["char"] for cell in row),
             }
             matches.append(match)
             if max_results is not None and len(matches) >= max_results:
@@ -805,9 +974,7 @@ def resolve_click_like_target(
     ignore_case: bool,
 ) -> Tuple[int, int, Optional[Dict[str, Any]]]:
     if text:
-        matches = find_matches_in_lines(
-            plain_lines(screen.rows), text, ignore_case=ignore_case
-        )
+        matches = find_matches_in_rows(screen.rows, text, ignore_case=ignore_case)
         if not matches:
             raise HarnessError(f"could not find text target {text!r}")
         if match_index < 1 or match_index > len(matches):
@@ -836,9 +1003,7 @@ def resolve_drag_endpoint(
     label: str,
 ) -> Tuple[int, int, Optional[Dict[str, Any]]]:
     if text:
-        matches = find_matches_in_lines(
-            plain_lines(screen.rows), text, ignore_case=ignore_case
-        )
+        matches = find_matches_in_rows(screen.rows, text, ignore_case=ignore_case)
         if not matches:
             raise HarnessError(f"could not find {label} text target {text!r}")
         if match_index < 1 or match_index > len(matches):
@@ -913,6 +1078,7 @@ def payload_for_rows(
             text if ansi else plain_text,
             start_row=row_range[0],
             start_col=col_range[0],
+            end_col=col_range[1],
             number_lines=number_lines,
             ruler=ruler,
             repr_mode=repr_mode,
@@ -955,7 +1121,9 @@ def build_screen_from_snapshot(data: Dict[str, Any]) -> CapturedScreen:
     info = dict(data["info"])
     width_hint = parse_dimension(info["width"], "width")
     tokens = tokenize_ansi(data["ansi_text"])
-    rows = build_rows_from_tokens(tokens, width_hint=width_hint)
+    if "rows" not in data:
+        raise HarnessError("snapshot lacks terminal-cell data; retake the snapshot")
+    rows = data["rows"]
     return CapturedScreen(
         info=info,
         ansi_text=data["ansi_text"],
@@ -967,7 +1135,10 @@ def build_screen_from_snapshot(data: Dict[str, Any]) -> CapturedScreen:
 
 
 def cell_diff(before: Dict[str, Any], after: Dict[str, Any]) -> Tuple[bool, bool]:
-    text_changed = before["char"] != after["char"]
+    text_changed = (before["char"], before.get("continuation", False)) != (
+        after["char"],
+        after.get("continuation", False),
+    )
     style_changed = before["style"] != after["style"]
     return text_changed, style_changed
 
@@ -997,7 +1168,7 @@ def diff_changes(
             after = get(after_rows, row_index, col_index)
             text_changed, style_changed = cell_diff(before, after)
             if style_only:
-                if before["char"] != after["char"] or not style_changed:
+                if text_changed or not style_changed:
                     continue
             elif not text_changed and not style_changed:
                 continue
@@ -1007,6 +1178,8 @@ def diff_changes(
                     "col": col_offset + col_index,
                     "before_char": before["char"],
                     "after_char": after["char"],
+                    "before_continuation": before.get("continuation", False),
+                    "after_continuation": after.get("continuation", False),
                     "text_changed": text_changed,
                     "style_changed": style_changed,
                     "before_style": style_payload(before["style"]),
@@ -1089,13 +1262,12 @@ def cmd_send_keys(args: argparse.Namespace) -> None:
     command = ["send-keys", "-t", args.target, "-N", str(args.repeat)]
     if args.literal:
         command.append("-l")
+    observation = begin_observation(args)
     run_tmux([*command, "--", *args.keys])
     if args.pause_ms > 0:
         time.sleep(args.pause_ms / 1000.0)
 
-    info = pane_info(args.target)
-    info["action"] = "send-keys"
-    emit(info)
+    finish_input(args, {"action": "send-keys"}, observation)
 
 
 def cmd_mouse_click(args: argparse.Namespace) -> None:
@@ -1110,6 +1282,7 @@ def cmd_mouse_click(args: argparse.Namespace) -> None:
         ignore_case=args.ignore_case,
     )
     button_code = BUTTON_CODES[args.button]
+    observation = begin_observation(args)
     send_literal(args.target, sgr_mouse(button_code, row, col))
     if args.hold_ms > 0:
         time.sleep(args.hold_ms / 1000.0)
@@ -1117,7 +1290,7 @@ def cmd_mouse_click(args: argparse.Namespace) -> None:
     if args.pause_ms > 0:
         time.sleep(args.pause_ms / 1000.0)
 
-    info = pane_info(args.target)
+    info = {}
     info["action"] = "mouse"
     info["mouse_action"] = "click"
     info["button"] = args.button
@@ -1132,7 +1305,7 @@ def cmd_mouse_click(args: argparse.Namespace) -> None:
             "anchor": args.anchor,
             "match_index": args.match_index,
         }
-    emit(info)
+    finish_input(args, info, observation)
 
 
 def cmd_mouse_scroll(args: argparse.Namespace) -> None:
@@ -1149,12 +1322,13 @@ def cmd_mouse_scroll(args: argparse.Namespace) -> None:
         ignore_case=args.ignore_case,
     )
     code = SCROLL_CODES[args.direction]
+    observation = begin_observation(args)
     for _ in range(args.amount):
         send_literal(args.target, sgr_mouse(code, row, col))
     if args.pause_ms > 0:
         time.sleep(args.pause_ms / 1000.0)
 
-    info = pane_info(args.target)
+    info = {}
     info["action"] = "mouse"
     info["mouse_action"] = "scroll"
     info["direction"] = args.direction
@@ -1170,7 +1344,7 @@ def cmd_mouse_scroll(args: argparse.Namespace) -> None:
             "anchor": args.anchor,
             "match_index": args.match_index,
         }
-    emit(info)
+    finish_input(args, info, observation)
 
 
 def cmd_mouse_drag(args: argparse.Namespace) -> None:
@@ -1198,7 +1372,7 @@ def cmd_mouse_drag(args: argparse.Namespace) -> None:
         label="drag end",
     )
     button_code = BUTTON_CODES[args.button]
-
+    observation = begin_observation(args)
     send_literal(args.target, sgr_mouse(button_code, start_row, start_col))
     points = drag_points(start_row, start_col, end_row, end_col, args.steps)
     motion_code = button_code + 32
@@ -1210,7 +1384,7 @@ def cmd_mouse_drag(args: argparse.Namespace) -> None:
     if args.pause_ms > 0:
         time.sleep(args.pause_ms / 1000.0)
 
-    info = pane_info(args.target)
+    info = {}
     info["action"] = "mouse"
     info["mouse_action"] = "drag"
     info["button"] = args.button
@@ -1237,7 +1411,7 @@ def cmd_mouse_drag(args: argparse.Namespace) -> None:
             "anchor": args.end_anchor,
             "match_index": args.end_match_index,
         }
-    emit(info)
+    finish_input(args, info, observation)
 
 
 def cmd_capture_pane(args: argparse.Namespace) -> None:
@@ -1267,8 +1441,10 @@ def cmd_capture_pane(args: argparse.Namespace) -> None:
         return
     info = pane_info(args.target)
     tokens = tokenize_ansi(text)
+    policy = CellPolicy()
+    update_cell_policy(policy, tokens, args.target)
     rows = build_rows_from_tokens(
-        tokens, width_hint=parse_dimension(info["width"], "width")
+        tokens, width_hint=parse_dimension(info["width"], "width"), cell_policy=policy
     )
     screen = CapturedScreen(
         info=info,
@@ -1400,54 +1576,179 @@ def cmd_screenshot(args: argparse.Namespace) -> None:
     emit(payload)
 
 
-def cmd_wait(args: argparse.Namespace) -> None:
-    baseline = capture_text(
-        args.target, ansi=args.ansi, start_line=args.start_line, end_line=args.end_line
+def observed_frame(args: argparse.Namespace, policy: CellPolicy) -> ObservedFrame:
+    screen = capture_screen(
+        args.target,
+        start_line=args.start_line,
+        end_line=args.end_line,
+        cell_policy=policy,
     )
-    last = baseline
-    stable_since = time.monotonic()
-    saw_change = False
-    deadline = time.monotonic() + (args.timeout_ms / 1000.0)
+    row_range = resolve_range(args.lines, screen.height, "line")
+    col_range = resolve_range(args.cols, screen.width, "column")
+    return ObservedFrame(
+        screen, crop_rows(screen.rows, row_range, col_range), row_range, col_range
+    )
 
-    while time.monotonic() <= deadline:
-        time.sleep(args.poll_ms / 1000.0)
-        current = capture_text(
-            args.target,
-            ansi=args.ansi,
-            start_line=args.start_line,
-            end_line=args.end_line,
+
+def begin_observation(args: argparse.Namespace) -> Optional[Observation]:
+    if args.mode is None:
+        if any(
+            (
+                args.expect_text,
+                args.expect_absent,
+                args.lines,
+                args.cols,
+                args.timeout_ms is not None,
+                args.poll_ms is not None,
+                args.stable_ms is not None,
+                args.require_change,
+                not args.ansi,
+                args.start_line is not None,
+                args.end_line is not None,
+            )
+        ):
+            raise HarnessError("observation options require --wait on input commands")
+        return None
+    if args.mode == "condition" and not (args.expect_text or args.expect_absent):
+        raise HarnessError("condition mode requires --expect-text or --expect-absent")
+    if any(text == "" for text in [*args.expect_text, *args.expect_absent]):
+        raise HarnessError("expected text must not be empty")
+    for name, default in (("timeout_ms", 2000), ("poll_ms", 100), ("stable_ms", 300)):
+        if getattr(args, name) is None:
+            setattr(args, name, default)
+    policy = CellPolicy()
+    return Observation(observed_frame(args, policy), policy)
+
+
+def frame_key(frame: ObservedFrame, ansi: bool) -> Tuple[Any, ...]:
+    return tuple(
+        tuple(
+            (
+                cell["char"],
+                cell["continuation"],
+                tuple(cell["style"].items()) if ansi else (),
+            )
+            for cell in row
         )
-
-        if args.mode == "change":
-            if current != baseline:
-                payload = pane_info(args.target)
-                payload["action"] = "wait"
-                payload["mode"] = args.mode
-                payload["changed"] = True
-                payload["text"] = current
-                emit(payload)
-            continue
-
-        if current != last:
-            saw_change = True
-            last = current
-            stable_since = time.monotonic()
-            continue
-
-        stable_enough = (time.monotonic() - stable_since) * 1000.0 >= args.stable_ms
-        if stable_enough and (saw_change or not args.require_change):
-            payload = pane_info(args.target)
-            payload["action"] = "wait"
-            payload["mode"] = args.mode
-            payload["changed"] = saw_change
-            payload["text"] = current
-            emit(payload)
-
-    fail(
-        f"timed out waiting for pane {args.target!r}",
-        detail=f"mode={args.mode} timeout_ms={args.timeout_ms}",
-        exit_code=2,
+        for row in frame.rows
     )
+
+
+def observe(
+    args: argparse.Namespace, observation: Observation, *, after_input: bool = False
+) -> Tuple[Dict[str, Any], Dict[str, Any], int]:
+    started = time.monotonic()
+    deadline = started + args.timeout_ms / 1000.0
+    last = observation.baseline
+    previous = frame_key(last, args.ansi)
+    changed = False
+    changes = samples = 0
+    stable_since = None
+    stable_ms = 0.0
+    reason, detail = "timeout", None
+    missing, present = [], []
+
+    while True:
+        try:
+            current = observed_frame(args, observation.policy)
+        except HarnessError as exc:
+            reason, detail = "capture-error", str(exc)
+            break
+        now = time.monotonic()
+        samples += 1
+        key = frame_key(current, args.ansi)
+        if key != previous:
+            changed = True
+            changes += 1
+            stable_since = now
+        elif stable_since is None:
+            stable_since = now
+        last, previous = current, key
+        plain = rows_to_text(last.rows, ansi=False)
+        missing = [text for text in args.expect_text if text not in plain]
+        present = [text for text in args.expect_absent if text in plain]
+        conditions_met = not missing and not present
+        if not conditions_met:
+            stable_since = None
+        stable_ms = 0 if stable_since is None else (now - stable_since) * 1000
+        goal_met = (
+            conditions_met
+            and (changed or not args.require_change)
+            and (
+                args.mode == "condition"
+                or (args.mode == "change" and changed)
+                or (args.mode == "stable" and stable_ms >= args.stable_ms)
+            )
+        )
+        if goal_met and now <= deadline:
+            reason = "satisfied"
+            break
+        if not last.screen.info["alive"] and (
+            after_input
+            or args.mode != "stable"
+            or args.expect_text
+            or args.expect_absent
+        ):
+            reason = "pane-exited"
+            break
+        if now >= deadline:
+            break
+        time.sleep(min(args.poll_ms / 1000.0, deadline - now))
+
+    ok = reason == "satisfied"
+    plain = rows_to_text(last.rows, ansi=False)
+    # Recompute for retained baseline evidence if the first post-input capture failed.
+    missing = [text for text in args.expect_text if text not in plain]
+    present = [text for text in args.expect_absent if text in plain]
+    result = {
+        "ok": ok,
+        "reason": reason,
+        "mode": args.mode,
+        "changed": changed,
+        "change_count": changes,
+        "samples": samples,
+        "elapsed_ms": round((time.monotonic() - started) * 1000),
+        "timeout_ms": args.timeout_ms,
+        "stable_for_ms": round(stable_ms),
+        "baseline_text": rows_to_text(observation.baseline.rows, ansi=args.ansi),
+        "text": rows_to_text(last.rows, ansi=args.ansi),
+        "plain_text": plain,
+        "rows": f"{last.row_range[0]}:{last.row_range[1]}",
+        "cols": f"{last.col_range[0]}:{last.col_range[1]}",
+        "expect_text": args.expect_text,
+        "expect_absent": args.expect_absent,
+        "conditions_met": not missing and not present,
+        "missing_text": missing,
+        "unexpected_text": present,
+        "last_capture_is_baseline": samples == 0,
+    }
+    if not ok:
+        result["error"] = f"observation failed: {reason}"
+    if detail:
+        result["detail"] = detail
+    return dict(last.screen.info), result, 0 if ok else 2
+
+
+def finish_input(
+    args: argparse.Namespace, fields: Dict[str, Any], observation: Optional[Observation]
+) -> None:
+    if observation is None:
+        info, exit_code = pane_info(args.target), 0
+    else:
+        info, result, exit_code = observe(args, observation, after_input=True)
+        info["ok"] = result["ok"]
+        info["observation"] = result
+    info.update(fields)
+    emit(info, exit_code)
+
+
+def cmd_wait(args: argparse.Namespace) -> None:
+    observation = begin_observation(args)
+    assert observation is not None
+    info, result, exit_code = observe(args, observation)
+    info.update(result)
+    info["action"] = "wait"
+    emit(info, exit_code)
 
 
 def cmd_cell(args: argparse.Namespace) -> None:
@@ -1461,6 +1762,11 @@ def cmd_cell(args: argparse.Namespace) -> None:
     payload["row"] = args.row
     payload["col"] = args.col
     payload["char"] = cell["char"]
+    lead, end = glyph_span(screen.rows[args.row - 1], args.col - 1)
+    payload["continuation"] = cell["continuation"]
+    payload["glyph"] = screen.rows[args.row - 1][lead]["char"]
+    payload["glyph_col"] = lead + 1
+    payload["glyph_width"] = end - lead + 1
     payload["line"] = plain_lines(screen.rows)[args.row - 1]
     payload["style"] = style_payload(cell["style"])
     payload["resolved_style"] = resolved_style_payload(cell["style"])
@@ -1500,6 +1806,7 @@ def cmd_region(args: argparse.Namespace) -> None:
                         "row": row_offset,
                         "col": col_offset,
                         "char": cell["char"],
+                        "continuation": cell["continuation"],
                         "style": style_payload(cell["style"]),
                         "resolved_style": resolved_style_payload(cell["style"]),
                     }
@@ -1513,8 +1820,8 @@ def cmd_find_text(args: argparse.Namespace) -> None:
     screen = capture_screen(
         args.target, start_line=args.start_line, end_line=args.end_line
     )
-    matches = find_matches_in_lines(
-        plain_lines(screen.rows),
+    matches = find_matches_in_rows(
+        screen.rows,
         args.text,
         ignore_case=args.ignore_case,
         max_results=args.max_results,
@@ -1554,6 +1861,7 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
         "info": screen.info,
         "ansi_text": screen.ansi_text,
         "plain_text": rows_to_text(screen.rows, ansi=False),
+        "rows": screen.rows,
     }
     path.write_text(json.dumps(data, indent=2, sort_keys=True))
 
@@ -1781,6 +2089,95 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def nonnegative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected a nonnegative integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("expected a nonnegative integer")
+    return parsed
+
+
+def cell_range(value: str) -> str:
+    if not re.fullmatch(r"(?:[0-9]+|[0-9]*:[0-9]*)", value):
+        raise argparse.ArgumentTypeError(
+            "expected a cell index or inclusive range such as 2:10"
+        )
+    return value
+
+
+def add_observation_args(
+    parser: argparse.ArgumentParser, *, inline: bool = False
+) -> None:
+    group = parser.add_argument_group("screen observation")
+    group.add_argument(
+        "--wait" if inline else "--mode",
+        dest="mode",
+        choices=("stable", "change", "condition"),
+        default=None if inline else "stable",
+        help=(
+            "Capture baseline BEFORE input, then observe"
+            if inline
+            else "Observe the selected screen region"
+        )
+        + ": stable, changed from baseline, or expected text condition",
+    )
+    group.add_argument(
+        "--expect-text",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="Require literal text in the selected region; repeat for AND conditions",
+    )
+    group.add_argument(
+        "--expect-absent",
+        action="append",
+        default=[],
+        metavar="TEXT",
+        help="Require literal text to be absent; repeat for AND conditions",
+    )
+    group.add_argument(
+        "--lines", type=cell_range, help="1-based inclusive observation rows, e.g. 2:8"
+    )
+    group.add_argument(
+        "--cols",
+        type=cell_range,
+        help="1-based inclusive observation columns, e.g. 1:60",
+    )
+    group.add_argument(
+        "--timeout-ms",
+        type=positive_int,
+        default=None if inline else 2000,
+        help="Observation timeout after input (default: 2000 ms)",
+    )
+    group.add_argument(
+        "--poll-ms",
+        type=positive_int,
+        default=None if inline else 100,
+        help="Interval between samples (default: 100 ms)",
+    )
+    group.add_argument(
+        "--stable-ms",
+        type=nonnegative_int,
+        default=None if inline else 300,
+        help="Unchanged-region dwell in stable mode (default: 300 ms)",
+    )
+    group.add_argument(
+        "--require-change",
+        action="store_true",
+        help="Also require an observed difference from the baseline",
+    )
+    group.add_argument(
+        "--plain",
+        dest="ansi",
+        action="store_false",
+        help="Ignore style changes when comparing cells; text conditions are always plain",
+    )
+    parser.set_defaults(ansi=True)
+    add_capture_args(parser)
+
+
 def socket_label(value: str) -> str:
     if not value:
         raise argparse.ArgumentTypeError(
@@ -1993,6 +2390,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keys such as Down, Enter, C-c, or text; sent in argument order",
     )
     send.set_defaults(func=cmd_send_keys, action="send-keys")
+    add_observation_args(send, inline=True)
 
     mouse = subparsers.add_parser("mouse", help="Send mouse events to a pane")
     mouse_subparsers = mouse.add_subparsers(dest="mouse_action", required=True)
@@ -2016,6 +2414,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional pause after the click sequence",
     )
     click.set_defaults(func=cmd_mouse_click)
+    add_observation_args(click, inline=True)
 
     scroll = mouse_subparsers.add_parser("scroll", help="Send mouse wheel events")
     add_target(scroll)
@@ -2036,6 +2435,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional pause after the scroll sequence",
     )
     scroll.set_defaults(func=cmd_mouse_scroll)
+    add_observation_args(scroll, inline=True)
 
     drag = mouse_subparsers.add_parser("drag", help="Send a click-and-drag gesture")
     add_target(drag)
@@ -2095,6 +2495,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--pause-ms", type=int, default=0, help="Optional pause after the drag sequence"
     )
     drag.set_defaults(func=cmd_mouse_drag)
+    add_observation_args(drag, inline=True)
 
     read = subparsers.add_parser(
         "capture-pane",
@@ -2157,36 +2558,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     wait = subparsers.add_parser(
         "wait",
-        help="Wait for screen change or stability (not tmux channel synchronization)",
+        help="Observe screen change, stability, or expected text (not tmux wait-for)",
+        epilog="For a pre-input baseline, use send-keys or mouse with --wait. "
+        "Conditions inspect plain text in --lines/--cols; all conditions must hold. "
+        "Timeout/exit results retain the last capture and return status 2.",
     )
     add_target(wait)
-    wait.add_argument(
-        "--mode",
-        choices=("stable", "change"),
-        default="stable",
-        help="Wait for stability or for any change from the baseline capture",
-    )
-    wait.add_argument("--timeout-ms", type=int, default=2000, help="Overall timeout")
-    wait.add_argument("--poll-ms", type=int, default=100, help="Polling interval")
-    wait.add_argument(
-        "--stable-ms",
-        type=int,
-        default=300,
-        help="How long the screen must remain unchanged in stable mode",
-    )
-    wait.add_argument(
-        "--require-change",
-        action="store_true",
-        help="Only succeed in stable mode after at least one redraw",
-    )
-    wait.add_argument(
-        "--plain",
-        dest="ansi",
-        action="store_false",
-        help="Strip ANSI escape codes and compare plain-text captures only",
-    )
-    wait.set_defaults(ansi=True)
-    add_capture_args(wait)
+    add_observation_args(wait)
     wait.set_defaults(func=cmd_wait)
 
     cell = subparsers.add_parser("cell", help="Inspect one cell at row,col")

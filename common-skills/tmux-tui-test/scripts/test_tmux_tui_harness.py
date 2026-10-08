@@ -238,6 +238,335 @@ class CliTests(unittest.TestCase):
                     )
 
 
+class CellTests(unittest.TestCase):
+    def rows(self, text: str, width: int = 20) -> list:
+        return harness.build_rows_from_tokens(harness.tokenize_ansi(text), width)
+
+    def test_wide_combining_and_emoji_cells(self) -> None:
+        for glyph, width in (
+            ("中", 2),
+            ("e\u0301", 1),
+            ("👩‍💻", 2),
+            ("🇺🇸", 2),
+            ("✈️", 2),
+            ("👍🏽", 2),
+            ("한", 2),
+        ):
+            with self.subTest(glyph=glyph):
+                row = self.rows(glyph + "X")[0]
+                self.assertEqual(row[0]["char"], glyph)
+                self.assertEqual(row[width]["char"], "X")
+                self.assertEqual(row[0]["continuation"], False)
+                for continuation in row[1:width]:
+                    self.assertEqual(continuation["char"], "")
+                    self.assertTrue(continuation["continuation"])
+
+    def test_tmux_width_policy_and_variation_selector(self) -> None:
+        tokens = harness.tokenize_ansi("·✈️X")
+        policy = harness.CellPolicy({"·": 2, "✈": 1, "️": 0}, False)
+        row = harness.build_rows_from_tokens(tokens, 10, policy)[0]
+        self.assertTrue(row[1]["continuation"])
+        self.assertEqual(row[2]["char"], "✈️")
+        self.assertEqual(row[3]["char"], "X")
+
+    def test_crops_blank_partial_glyphs_and_preserve_complete_glyphs(self) -> None:
+        rows = self.rows("A中B")
+        for cols, expected in (((2, 3), "中"), ((3, 4), " B"), ((1, 2), "A ")):
+            with self.subTest(cols=cols):
+                crop = harness.crop_rows(rows, (1, 1), cols)
+                self.assertEqual(harness.rows_to_text(crop, ansi=False), expected)
+                self.assertEqual(len(crop[0]), cols[1] - cols[0] + 1)
+
+    def test_match_columns_include_full_glyph_and_casefold_expansion(self) -> None:
+        rows = self.rows("中éß👩‍💻END")
+        for text, ignore_case, start, end in (
+            ("é", False, 3, 3),
+            ("e", False, 3, 3),
+            ("SS", True, 4, 4),
+            ("👩‍💻", False, 5, 6),
+            ("END", False, 7, 9),
+        ):
+            with self.subTest(text=text):
+                match = harness.find_matches_in_rows(
+                    rows, text, ignore_case=ignore_case
+                )[0]
+                self.assertEqual((match["start_col"], match["end_col"]), (start, end))
+
+    def test_snapshot_keeps_original_cells_after_width_policy_changes(self) -> None:
+        rows = self.rows("中X", 10)
+        saved = harness.build_screen_from_snapshot(
+            {"info": {"width": "10"}, "ansi_text": "中X", "rows": rows}
+        )
+        self.assertEqual(saved.rows, rows)
+        self.assertEqual(saved.rows[0][2]["char"], "X")
+
+    def test_diff_reports_both_cells_of_a_wide_glyph(self) -> None:
+        changes = harness.diff_changes(
+            self.rows("中X", 4),
+            self.rows("文X", 4),
+            row_offset=1,
+            col_offset=1,
+            style_only=False,
+        )
+        self.assertEqual([change["col"] for change in changes], [1])
+        changes = harness.diff_changes(
+            self.rows("中X", 4),
+            self.rows("  X", 4),
+            row_offset=1,
+            col_offset=1,
+            style_only=False,
+        )
+        self.assertEqual([change["col"] for change in changes], [1, 2])
+        self.assertTrue(changes[1]["before_continuation"])
+
+
+class ObservationTests(unittest.TestCase):
+    def frame(self, text: str, *, alive: bool = True) -> harness.CapturedScreen:
+        tokens = harness.tokenize_ansi(text)
+        rows = harness.build_rows_from_tokens(tokens, 20)
+        return harness.CapturedScreen(
+            {
+                "pane": "%4",
+                "width": "20",
+                "alive": alive,
+                "exit_status": 7 if not alive else None,
+            },
+            text,
+            tokens,
+            rows,
+            20,
+            len(rows),
+        )
+
+    def run_send(self, frames: list, *flags: str) -> tuple:
+        args = harness.build_parser().parse_args(
+            ["send-keys", "-t", "%4", *flags, "Enter"]
+        )
+        events = []
+
+        def capture(*unused, **kwargs):
+            events.append("capture")
+            result = frames.pop(0) if len(frames) > 1 else frames[0]
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        with (
+            mock.patch.object(harness, "capture_screen", side_effect=capture),
+            mock.patch.object(
+                harness, "run_tmux", side_effect=lambda *a, **k: events.append("send")
+            ),
+            mock.patch.object(harness, "emit") as emit,
+        ):
+            harness.cmd_send_keys(args)
+        return events, emit.call_args.args
+
+    def test_baseline_precedes_input_and_first_sample_detects_immediate_redraw(
+        self,
+    ) -> None:
+        events, (payload, status) = self.run_send(
+            [self.frame("Before"), self.frame("Saved")],
+            "--wait",
+            "change",
+            "--poll-ms",
+            "500",
+        )
+        self.assertEqual(events, ["capture", "send", "capture"])
+        self.assertEqual(status, 0)
+        self.assertTrue(payload["observation"]["changed"])
+        self.assertIn("Before", payload["observation"]["baseline_text"])
+        self.assertIn("Saved", payload["observation"]["text"])
+        self.assertEqual(payload["observation"]["samples"], 1)
+
+    def test_all_presence_and_absence_conditions_must_hold(self) -> None:
+        _, (payload, status) = self.run_send(
+            [
+                self.frame("Loading"),
+                self.frame("Saved Loading"),
+                self.frame("Saved Ready"),
+            ],
+            "--wait",
+            "condition",
+            "--expect-text",
+            "Saved",
+            "--expect-text",
+            "Ready",
+            "--expect-absent",
+            "Loading",
+            "--poll-ms",
+            "1",
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(payload["observation"]["samples"], 2)
+        self.assertTrue(payload["observation"]["conditions_met"])
+
+    def test_already_satisfied_condition_is_not_claimed_as_a_change(self) -> None:
+        _, (payload, status) = self.run_send(
+            [self.frame("Saved")], "--wait", "condition", "--expect-text", "Saved"
+        )
+        self.assertEqual(status, 0)
+        self.assertFalse(payload["observation"]["changed"])
+
+    def test_timeout_contains_last_capture_and_unsatisfied_conditions(self) -> None:
+        _, (payload, status) = self.run_send(
+            [self.frame("Before"), self.frame("Error")],
+            "--wait",
+            "condition",
+            "--expect-text",
+            "Saved",
+            "--timeout-ms",
+            "5",
+            "--poll-ms",
+            "2",
+        )
+        result = payload["observation"]
+        self.assertEqual(status, 2)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(result["reason"], "timeout")
+        self.assertEqual(result["missing_text"], ["Saved"])
+        self.assertIn("Error", result["text"])
+
+    def test_pane_exit_retains_final_capture_and_process_status(self) -> None:
+        _, (payload, status) = self.run_send(
+            [self.frame("Before"), self.frame("CRASH", alive=False)],
+            "--wait",
+            "condition",
+            "--expect-text",
+            "Saved",
+        )
+        self.assertEqual(status, 2)
+        self.assertEqual(payload["observation"]["reason"], "pane-exited")
+        self.assertIn("CRASH", payload["observation"]["text"])
+        self.assertEqual(payload["exit_status"], 7)
+
+    def test_capture_error_explicitly_labels_retained_baseline(self) -> None:
+        _, (payload, status) = self.run_send(
+            [self.frame("Before"), harness.HarnessError("pane gone")],
+            "--wait",
+            "change",
+        )
+        self.assertEqual(status, 2)
+        self.assertTrue(payload["observation"]["last_capture_is_baseline"])
+        self.assertEqual(payload["observation"]["detail"], "pane gone")
+
+    def test_invalid_conditions_are_rejected_before_input(self) -> None:
+        for flags in (
+            ("--wait", "condition"),
+            ("--expect-text", "Saved"),
+            ("--wait", "condition", "--expect-text", ""),
+            ("--wait", "stable", "--lines", "25"),
+        ):
+            with self.subTest(flags=flags):
+                args = harness.build_parser().parse_args(
+                    ["send-keys", "-t", "%4", *flags, "Enter"]
+                )
+                with (
+                    mock.patch.object(harness, "run_tmux") as send,
+                    mock.patch.object(
+                        harness, "capture_screen", return_value=self.frame("Before")
+                    ),
+                    self.assertRaises(harness.HarnessError),
+                ):
+                    harness.cmd_send_keys(args)
+                send.assert_not_called()
+
+    def test_plain_comparison_ignores_style_only_redraw(self) -> None:
+        frames = [self.frame("\x1b[31mReady"), self.frame("\x1b[34mReady")]
+        _, (payload, status) = self.run_send(
+            frames, "--wait", "stable", "--stable-ms", "0", "--plain"
+        )
+        self.assertEqual(status, 0)
+        self.assertFalse(payload["observation"]["changed"])
+        frames = [self.frame("\x1b[31mReady"), self.frame("\x1b[34mReady")]
+        _, (payload, status) = self.run_send(frames, "--wait", "change")
+        self.assertEqual(status, 0)
+        self.assertTrue(payload["observation"]["changed"])
+
+    def test_require_change_rejects_an_already_satisfied_condition(self) -> None:
+        _, (payload, status) = self.run_send(
+            [self.frame("Saved")],
+            "--wait",
+            "condition",
+            "--expect-text",
+            "Saved",
+            "--require-change",
+            "--timeout-ms",
+            "5",
+            "--poll-ms",
+            "2",
+        )
+        self.assertEqual(status, 2)
+        self.assertTrue(payload["observation"]["conditions_met"])
+        self.assertFalse(payload["observation"]["changed"])
+
+    def test_mouse_variants_capture_baseline_before_first_event(self) -> None:
+        for variant, flags in (
+            ("click", ["--row", "1", "--col", "1"]),
+            ("scroll", ["--row", "1", "--col", "1", "--direction", "down"]),
+            (
+                "drag",
+                [
+                    "--start-row",
+                    "1",
+                    "--start-col",
+                    "1",
+                    "--end-row",
+                    "1",
+                    "--end-col",
+                    "3",
+                ],
+            ),
+        ):
+            with self.subTest(variant=variant):
+                args = harness.build_parser().parse_args(
+                    [
+                        "mouse",
+                        variant,
+                        "-t",
+                        "%4",
+                        *flags,
+                        "--wait",
+                        "condition",
+                        "--expect-text",
+                        "Saved",
+                    ]
+                )
+                events = []
+
+                def capture(*unused, **kwargs):
+                    events.append("capture")
+                    return self.frame("Saved" if "send" in events else "Before")
+
+                with (
+                    mock.patch.object(harness, "capture_screen", side_effect=capture),
+                    mock.patch.object(
+                        harness,
+                        "send_literal",
+                        side_effect=lambda *a: events.append("send"),
+                    ),
+                    mock.patch.object(harness, "emit") as emit,
+                ):
+                    args.func(args)
+                self.assertEqual(events[:3], ["capture", "capture", "send"])
+                self.assertEqual(events[-1], "capture")
+                self.assertEqual(emit.call_args.args[1], 0)
+
+    def test_invalid_polling_parameters_are_rejected(self) -> None:
+        for flags in (
+            ("--poll-ms", "0"),
+            ("--timeout-ms", "-1"),
+            ("--stable-ms", "-1"),
+        ):
+            with (
+                self.subTest(flags=flags),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                harness.build_parser().parse_args(
+                    ["send-keys", "-t", "%4", "--wait", "stable", *flags, "Enter"]
+                )
+
+
 FIXTURE = """
 import os, sys, termios
 settings = termios.tcgetattr(0)
@@ -596,6 +925,257 @@ class TmuxIntegrationTests(unittest.TestCase):
         )
         self.assertGreater(diff["style_change_count"], 0)
         self.assertEqual(diff["text_change_count"], 0)
+
+    def start_fixture(self, name: str, code: str, *, width: int = 60) -> dict:
+        return self.call(
+            "new-session",
+            "-s",
+            name,
+            "-x",
+            str(width),
+            "-y",
+            "16",
+            "--",
+            sys.executable,
+            "-u",
+            "-c",
+            code,
+        )
+
+    def test_unicode_coordinates_agree_with_tmux_cursor(self) -> None:
+        for index, glyph in enumerate(("中", "é", "👩‍💻", "🇺🇸", "✈️", "👍🏽", "한")):
+            with self.subTest(glyph=glyph):
+                code = (
+                    "import sys; sys.stdout.write('\\x1b[2J\\x1b[H\\x1b[31m' + "
+                    + repr(glyph)
+                    + " + '\\x1b[0mEND'); sys.stdout.flush(); sys.stdin.readline()"
+                )
+                pane = self.start_fixture("unicode" + str(index), code)["pane"]
+                self.stable(pane)
+                cursor = int(
+                    self.native(
+                        "display-message", "-p", "-t", pane, "#{cursor_x}"
+                    ).stdout
+                )
+                match = self.call("find-text", "-t", pane, "--text", "END")["matches"][
+                    0
+                ]
+                self.assertEqual(match["start_col"], cursor - 2)
+                self.assertEqual(match["end_col"], cursor)
+                width = cursor - 3
+                cell = self.call("cell", "-t", pane, "--row", "1", "--col", "1")
+                self.assertEqual(cell["glyph"], glyph)
+                self.assertEqual(cell["glyph_width"], width)
+                self.assertEqual(cell["resolved_style"]["resolved_fg"], "red")
+                if width == 2:
+                    tail = self.call("cell", "-t", pane, "--row", "1", "--col", "2")
+                    self.assertTrue(tail["continuation"])
+                    self.assertEqual(tail["glyph"], glyph)
+                    self.assertEqual(tail["glyph_col"], 1)
+                    crop = self.call(
+                        "capture-pane", "-t", pane, "--lines", "1", "--cols", "2:3"
+                    )
+                    self.assertEqual(crop["text"], " E")
+                click = self.call(
+                    "mouse", "click", "-t", pane, "--text", "END", "--anchor", "start"
+                )
+                self.assertEqual(click["col"], cursor - 2)
+
+    def test_server_width_overrides_and_variation_selector_policy(self) -> None:
+        self.native("set-option", "-s", "codepoint-widths", "U+00B7=2")
+        self.native("set-option", "-g", "variation-selector-always-wide", "off")
+        code = "import sys; sys.stdout.write('·✈️END'); sys.stdout.flush(); sys.stdin.readline()"
+        pane = self.start_fixture("width-policy", code)["pane"]
+        self.stable(pane)
+        match = self.call("find-text", "-t", pane, "--text", "END")["matches"][0]
+        cursor = int(
+            self.native("display-message", "-p", "-t", pane, "#{cursor_x}").stdout
+        )
+        self.assertEqual(match["start_col"], cursor - 2)
+        self.assertEqual(match["start_col"], 4)
+        self.snapshot(pane, "unicode-before")
+        self.assertEqual(
+            self.call("diff", "-t", pane, "--before", "unicode-before")[
+                "changed_cell_count"
+            ],
+            0,
+        )
+
+    def test_wide_glyph_wrap_preserves_physical_rows(self) -> None:
+        pane = self.start_fixture(
+            "wide-wrap",
+            "import sys; sys.stdout.write('1234567中Z'); sys.stdout.flush(); sys.stdin.readline()",
+            width=8,
+        )["pane"]
+        self.stable(pane)
+        self.assertEqual(
+            self.call("cell", "-t", pane, "--row", "2", "--col", "3")["char"], "Z"
+        )
+        match = self.call("find-text", "-t", pane, "--text", "中Z")["matches"][0]
+        self.assertEqual(
+            (match["row"], match["start_col"], match["end_col"]), (2, 1, 3)
+        )
+
+    def test_observation_ignores_animation_outside_selected_region(self) -> None:
+        code = """
+import select, sys, termios
+settings = termios.tcgetattr(0)
+settings[3] &= ~termios.ECHO
+termios.tcsetattr(0, termios.TCSANOW, settings)
+saved, tick = False, 0
+sys.stdout.write('\\x1b[2J')
+while True:
+    if select.select([sys.stdin], [], [], .01)[0]:
+        sys.stdin.readline()
+        saved = True
+    tick += 1
+    sys.stdout.write('\\x1b[1;1H' + ('Saved Ready' if saved else 'Idle') + '\\x1b[K\\x1b[2;1HTICK=' + str(tick))
+    sys.stdout.flush()
+"""
+        pane = self.start_fixture("animated", code)["pane"]
+        self.call("wait", "-t", pane, "--mode", "condition", "--expect-text", "Idle")
+        result = self.call(
+            "send-keys",
+            "-t",
+            pane,
+            "--wait",
+            "stable",
+            "--expect-text",
+            "Saved",
+            "--expect-absent",
+            "Idle",
+            "--lines",
+            "1",
+            "--cols",
+            "1:11",
+            "--stable-ms",
+            "100",
+            "--poll-ms",
+            "20",
+            "--timeout-ms",
+            "1500",
+            "Enter",
+        )
+        self.assertTrue(result["observation"]["changed"])
+        self.assertEqual(result["observation"]["plain_text"], "Saved Ready")
+        self.assertGreaterEqual(result["observation"]["stable_for_ms"], 100)
+        failed = self.invoke(
+            "wait",
+            "-t",
+            pane,
+            "--stable-ms",
+            "300",
+            "--timeout-ms",
+            "150",
+            "--poll-ms",
+            "20",
+            check=False,
+        )
+        self.assertEqual(failed.returncode, 2)
+        failure = json.loads(failed.stdout)
+        self.assertEqual(failure["reason"], "timeout")
+        self.assertIn("TICK=", failure["text"])
+        self.assertGreater(failure["change_count"], 0)
+
+    def test_action_condition_does_not_accept_quiet_wrong_screen(self) -> None:
+        failed = self.invoke(
+            "send-keys",
+            "-t",
+            self.pane,
+            "--wait",
+            "stable",
+            "--expect-text",
+            "NEVER-APPEARS",
+            "--timeout-ms",
+            "180",
+            "--stable-ms",
+            "30",
+            "--poll-ms",
+            "10",
+            "wrong",
+            "Enter",
+            check=False,
+        )
+        self.assertEqual(failed.returncode, 2)
+        result = json.loads(failed.stdout)
+        self.assertEqual(result["observation"]["missing_text"], ["NEVER-APPEARS"])
+        self.assertIn("INPUT='wrong", result["observation"]["text"])
+
+    def test_condition_returns_final_output_from_exiting_process(self) -> None:
+        pane = self.start_fixture(
+            "exit-condition",
+            "import sys; print('READY', flush=True); sys.stdin.readline(); print('DONE', flush=True); sys.exit(7)",
+        )["pane"]
+        self.call("wait", "-t", pane, "--mode", "condition", "--expect-text", "READY")
+        result = self.call(
+            "send-keys",
+            "-t",
+            pane,
+            "--wait",
+            "condition",
+            "--expect-text",
+            "DONE",
+            "Enter",
+        )
+        self.assertTrue(result["observation"]["conditions_met"])
+        self.assertIn("DONE", result["observation"]["text"])
+        self.stable(pane)
+        self.assertEqual(self.call("info", "-t", pane)["exit_status"], 7)
+
+    def test_pane_exit_fails_unmet_action_condition_with_final_output(self) -> None:
+        pane = self.start_fixture(
+            "exit-unmet",
+            "import sys; print('READY', flush=True); sys.stdin.readline(); print('CRASH', flush=True); sys.exit(7)",
+        )["pane"]
+        self.call("wait", "-t", pane, "--mode", "condition", "--expect-text", "READY")
+        failed = self.invoke(
+            "send-keys",
+            "-t",
+            pane,
+            "--wait",
+            "condition",
+            "--expect-text",
+            "Saved",
+            "--poll-ms",
+            "20",
+            "Enter",
+            check=False,
+        )
+        self.assertEqual(failed.returncode, 2)
+        result = json.loads(failed.stdout)
+        self.assertEqual(result["observation"]["reason"], "pane-exited")
+        self.assertIn("CRASH", result["observation"]["text"])
+        self.assertEqual(result["exit_status"], 7)
+
+    def test_mouse_action_observes_condition(self) -> None:
+        code = """
+import os, sys, tty
+tty.setraw(0)
+sys.stdout.write('\\x1b[2J\\x1b[H\\x1b[?1000h\\x1b[?1006hBUTTON')
+sys.stdout.flush()
+data = b''
+while not data.endswith(b'm'):
+    data += os.read(0, 1)
+sys.stdout.write('\\x1b[2;1HClicked')
+sys.stdout.flush()
+os.read(0, 1)
+"""
+        pane = self.start_fixture("mouse-observe", code)["pane"]
+        self.call("wait", "-t", pane, "--mode", "condition", "--expect-text", "BUTTON")
+        result = self.call(
+            "mouse",
+            "click",
+            "-t",
+            pane,
+            "--text",
+            "BUTTON",
+            "--wait",
+            "condition",
+            "--expect-text",
+            "Clicked",
+        )
+        self.assertEqual(result["mouse_action"], "click")
+        self.assertTrue(result["observation"]["changed"])
 
 
 def screenshot_args(output: Path, **overrides: object) -> argparse.Namespace:
