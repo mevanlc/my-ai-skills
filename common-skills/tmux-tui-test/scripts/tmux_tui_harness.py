@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -120,7 +121,9 @@ def fail(message: str, *, detail: Optional[str] = None, exit_code: int = 1) -> N
     emit(payload, exit_code)
 
 
-def run_tmux(args: List[str], *, check: bool = True) -> CommandResult:
+def run_tmux(
+    args: List[str], *, check: bool = True, preserve_stdout: bool = False
+) -> CommandResult:
     try:
         completed = subprocess.run(
             [*tmux_base(), *args],
@@ -131,7 +134,7 @@ def run_tmux(args: List[str], *, check: bool = True) -> CommandResult:
     except FileNotFoundError as exc:
         raise HarnessError("tmux is not installed or not on PATH") from exc
 
-    stdout = completed.stdout.rstrip("\n")
+    stdout = completed.stdout if preserve_stdout else completed.stdout.rstrip("\n")
     stderr = completed.stderr.rstrip("\n")
     if check and completed.returncode != 0:
         detail = stderr or stdout or f"tmux exited with status {completed.returncode}"
@@ -165,13 +168,18 @@ def maybe_int(value: Optional[str]) -> Optional[int]:
         return None
 
 
-def session_info(session: str) -> Dict[str, Any]:
+def pane_info(session: str) -> Dict[str, Any]:
     fmt = "\t".join(
         [
             "session=#{session_name}",
             "pane=#{pane_id}",
-            "width=#{window_width}",
-            "height=#{window_height}",
+            "session_id=#{session_id}",
+            "window=#{window_id}",
+            "socket_path=#{socket_path}",
+            "server_pid=#{pid}",
+            "server_start=#{start_time}",
+            "width=#{pane_width}",
+            "height=#{pane_height}",
             "pid=#{pane_pid}",
             "command=#{pane_current_command}",
             "dead=#{pane_dead}",
@@ -193,11 +201,12 @@ def session_info(session: str) -> Dict[str, Any]:
             "mouse_utf8_flag=#{mouse_utf8_flag}",
         ]
     )
-    result = run_tmux(["list-panes", "-t", session, "-F", fmt])
-    line = result.stdout.splitlines()[0] if result.stdout else ""
-    info = parse_kv_line(line)
-    if not info:
-        raise HarnessError(f"failed to inspect session {session!r}")
+    result = run_tmux(["display-message", "-p", "-t", session, "-F", fmt])
+    info = parse_kv_line(result.stdout)
+    # display-message can exit successfully with empty format values for an
+    # unresolved target. Never turn that empty pane ID into implicit targeting.
+    if not info.get("pane") or not info.get("session_id"):
+        raise HarnessError(f"failed to inspect target {session!r}")
 
     info["ok"] = True
     dead = info.get("dead") == "1"
@@ -237,9 +246,9 @@ def capture_text(
     session: str,
     *,
     ansi: bool = True,
-    history: Optional[int] = None,
-    full_history: bool = False,
-    join_wrapped: bool = True,
+    start_line: Optional[str] = None,
+    end_line: Optional[str] = None,
+    join_wrapped: bool = False,
     preserve_trailing_spaces: bool = False,
 ) -> str:
     args = ["capture-pane", "-t", session, "-p"]
@@ -249,11 +258,11 @@ def capture_text(
         args.append("-e")
     if preserve_trailing_spaces:
         args.append("-N")
-    if full_history:
-        args.extend(["-S", "-"])
-    elif history is not None:
-        args.extend(["-S", f"-{history}"])
-    return run_tmux(args).stdout
+    if start_line is not None:
+        args.extend(["-S", start_line])
+    if end_line is not None:
+        args.extend(["-E", end_line])
+    return run_tmux(args, preserve_stdout=True).stdout
 
 
 def send_literal(session: str, text: str) -> None:
@@ -264,22 +273,6 @@ def normalize_command(command: List[str]) -> List[str]:
     if command and command[0] == "--":
         return command[1:]
     return command
-
-
-def build_command(command: List[str], env_items: List[str]) -> str:
-    argv = normalize_command(command)
-    if not argv:
-        raise HarnessError("start requires a command after --")
-
-    extra = []
-    for item in env_items:
-        if "=" not in item:
-            raise HarnessError(f"invalid env assignment: {item!r}")
-        extra.append(item)
-
-    if extra:
-        return shlex.join(["env", *extra, *argv])
-    return shlex.join(argv)
 
 
 def clone_style(style: Dict[str, Any]) -> Dict[str, Any]:
@@ -392,7 +385,9 @@ def tokenize_ansi(text: str) -> List[Dict[str, Any]]:
         next_char = text[index + 1]
         if next_char == "[":
             final_index = index + 2
-            while final_index < len(text) and not (0x40 <= ord(text[final_index]) <= 0x7E):
+            while final_index < len(text) and not (
+                0x40 <= ord(text[final_index]) <= 0x7E
+            ):
                 final_index += 1
             if final_index >= len(text):
                 append_text(text[index:])
@@ -400,8 +395,14 @@ def tokenize_ansi(text: str) -> List[Dict[str, Any]]:
             raw = text[index : final_index + 1]
             params = text[index + 2 : final_index]
             final = text[final_index]
-            if final == "m" and all(part.isdigit() or part == "" for part in params.split(";")):
-                codes = [int(part) if part else 0 for part in params.split(";")] if params else [0]
+            if final == "m" and all(
+                part.isdigit() or part == "" for part in params.split(";")
+            ):
+                codes = (
+                    [int(part) if part else 0 for part in params.split(";")]
+                    if params
+                    else [0]
+                )
                 tokens.append({"type": "sgr", "raw": raw, "codes": codes})
             else:
                 tokens.append(
@@ -422,7 +423,11 @@ def tokenize_ansi(text: str) -> List[Dict[str, Any]]:
                 if text[end_index] == "\x07":
                     end_index += 1
                     break
-                if text[end_index] == "\x1b" and end_index + 1 < len(text) and text[end_index + 1] == "\\":
+                if (
+                    text[end_index] == "\x1b"
+                    and end_index + 1 < len(text)
+                    and text[end_index + 1] == "\\"
+                ):
                     end_index += 2
                     break
                 end_index += 1
@@ -446,7 +451,9 @@ def char_width(char: str) -> int:
     return 1
 
 
-def build_rows_from_tokens(tokens: List[Dict[str, Any]], width_hint: Optional[int]) -> List[List[Dict[str, Any]]]:
+def build_rows_from_tokens(
+    tokens: List[Dict[str, Any]], width_hint: Optional[int]
+) -> List[List[Dict[str, Any]]]:
     rows: List[List[Dict[str, Any]]] = [[]]
     style = default_style()
 
@@ -469,12 +476,18 @@ def build_rows_from_tokens(tokens: List[Dict[str, Any]], width_hint: Optional[in
             if width == 0 and current_row():
                 current_row()[-1]["char"] += char
                 continue
-            current_row().append({"char": char, "style": clone_style(style), "continuation": False})
+            current_row().append(
+                {"char": char, "style": clone_style(style), "continuation": False}
+            )
 
     if rows and rows[-1] == []:
         rows.pop()
 
-    width = width_hint if width_hint is not None else max((len(row) for row in rows), default=0)
+    width = (
+        width_hint
+        if width_hint is not None
+        else max((len(row) for row in rows), default=0)
+    )
     for row in rows:
         while len(row) < width:
             row.append({"char": " ", "style": default_style(), "continuation": False})
@@ -484,15 +497,17 @@ def build_rows_from_tokens(tokens: List[Dict[str, Any]], width_hint: Optional[in
 def capture_screen(
     session: str,
     *,
-    history: Optional[int] = None,
-    full_history: bool = False,
+    start_line: Optional[str] = None,
+    end_line: Optional[str] = None,
 ) -> CapturedScreen:
-    info = session_info(session)
+    info = pane_info(session)
     width_hint = parse_dimension(info["width"], "width")
-    ansi_text = capture_text(session, ansi=True, history=history, full_history=full_history)
+    ansi_text = capture_text(
+        session, ansi=True, start_line=start_line, end_line=end_line
+    )
     tokens = tokenize_ansi(ansi_text)
     rows = build_rows_from_tokens(tokens, width_hint=width_hint)
-    width = width_hint if rows else width_hint
+    width = width_hint
     height = len(rows)
     return CapturedScreen(
         info=info,
@@ -636,7 +651,9 @@ def visible_repr_char(char: str) -> str:
 
 
 def visible_repr_text(text: str) -> str:
-    return "\n".join("".join(visible_repr_char(char) for char in line) for line in text.splitlines())
+    return "\n".join(
+        "".join(visible_repr_char(char) for char in line) for line in text.splitlines()
+    )
 
 
 def build_ruler_lines(start_col: int, end_col: int) -> List[str]:
@@ -667,7 +684,9 @@ def display_text(
     if repr_mode:
         lines = ["".join(visible_repr_char(char) for char in line) for line in lines]
 
-    prefix_width = len(str(start_row + max(len(lines) - 1, 0))) + 2 if number_lines else 0
+    prefix_width = (
+        len(str(start_row + max(len(lines) - 1, 0))) + 2 if number_lines else 0
+    )
     output: List[str] = []
 
     if ruler and lines:
@@ -786,7 +805,9 @@ def resolve_click_like_target(
     ignore_case: bool,
 ) -> Tuple[int, int, Optional[Dict[str, Any]]]:
     if text:
-        matches = find_matches_in_lines(plain_lines(screen.rows), text, ignore_case=ignore_case)
+        matches = find_matches_in_lines(
+            plain_lines(screen.rows), text, ignore_case=ignore_case
+        )
         if not matches:
             raise HarnessError(f"could not find text target {text!r}")
         if match_index < 1 or match_index > len(matches):
@@ -815,11 +836,15 @@ def resolve_drag_endpoint(
     label: str,
 ) -> Tuple[int, int, Optional[Dict[str, Any]]]:
     if text:
-        matches = find_matches_in_lines(plain_lines(screen.rows), text, ignore_case=ignore_case)
+        matches = find_matches_in_lines(
+            plain_lines(screen.rows), text, ignore_case=ignore_case
+        )
         if not matches:
             raise HarnessError(f"could not find {label} text target {text!r}")
         if match_index < 1 or match_index > len(matches):
-            raise HarnessError(f"{label} match index {match_index} is outside 1:{len(matches)}")
+            raise HarnessError(
+                f"{label} match index {match_index} is outside 1:{len(matches)}"
+            )
         match = matches[match_index - 1]
         resolved_row = match["row"]
         resolved_col = anchor_col(match, anchor)
@@ -895,14 +920,16 @@ def payload_for_rows(
     if repr_mode:
         payload["repr_text"] = visible_repr_text(text if ansi else plain_text)
     if include_tokens:
-        payload["tokens"] = serialize_tokens(tokenize_ansi(text if ansi else plain_text))
+        payload["tokens"] = serialize_tokens(
+            tokenize_ansi(text if ansi else plain_text)
+        )
     return payload
 
 
 def load_snapshot(session: str, name: str) -> Dict[str, Any]:
     path = snapshot_path(session, name)
     if not path.exists():
-        raise HarnessError(f"snapshot {name!r} for session {session!r} does not exist")
+        raise HarnessError(f"snapshot {name!r} for target {session!r} does not exist")
     return json.loads(path.read_text())
 
 
@@ -915,9 +942,13 @@ def sanitize_snapshot_name(name: str) -> str:
 
 def snapshot_path(session: str, name: str) -> Path:
     SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-    safe_session = sanitize_snapshot_name(session)
+    info = pane_info(session)
+    identity = [
+        info[key] for key in ("socket_path", "server_pid", "server_start", "pane")
+    ]
+    namespace = hashlib.sha256(json.dumps(identity).encode()).hexdigest()
     safe_name = sanitize_snapshot_name(name)
-    return SNAPSHOT_DIR / f"{safe_session}--{safe_name}.json"
+    return SNAPSHOT_DIR / f"{namespace}--{safe_name}.json"
 
 
 def build_screen_from_snapshot(data: Dict[str, Any]) -> CapturedScreen:
@@ -953,7 +984,9 @@ def diff_changes(
     max_rows = max(len(before_rows), len(after_rows))
     max_cols = max((len(row) for row in before_rows + after_rows), default=0)
 
-    def get(rows: List[List[Dict[str, Any]]], row_index: int, col_index: int) -> Dict[str, Any]:
+    def get(
+        rows: List[List[Dict[str, Any]]], row_index: int, col_index: int
+    ) -> Dict[str, Any]:
         if row_index >= len(rows) or col_index >= len(rows[row_index]):
             return {"char": " ", "style": default_style(), "continuation": False}
         return rows[row_index][col_index]
@@ -998,16 +1031,16 @@ def bounding_box(changes: List[Dict[str, Any]]) -> Optional[Dict[str, int]]:
     }
 
 
-def cmd_start(args: argparse.Namespace) -> None:
+def cmd_new_session(args: argparse.Namespace) -> None:
     session = args.session or f"codex-tui-{uuid.uuid4().hex[:8]}"
-    command = build_command(args.argv, args.env)
+    command = normalize_command(args.argv)
 
     tmux_args = [
         "new-session",
         "-d",
         "-P",
         "-F",
-        "#{session_name}",
+        "#{pane_id}",
         "-s",
         session,
         "-x",
@@ -1017,38 +1050,56 @@ def cmd_start(args: argparse.Namespace) -> None:
     ]
     if args.cwd:
         tmux_args.extend(["-c", args.cwd])
-    tmux_args.append(command)
-
-    run_tmux(tmux_args)
-    run_tmux(["set-window-option", "-t", session, "remain-on-exit", "on"])
-    # Pin the pane geometry: on a server with no attached client, tmux would
-    # otherwise renegotiate the -x/-y size (e.g. snap to 80x24). "manual" keeps
-    # captures deterministic regardless of whether a client ever attaches.
-    run_tmux(["set-option", "-t", session, "window-size", "manual"], check=False)
-    info = session_info(session)
-    info["action"] = "start"
-    info["command_line"] = command
+    for item in args.env:
+        if "=" not in item or not item.split("=", 1)[0]:
+            raise HarnessError(f"invalid env assignment: {item!r}")
+        tmux_args.extend(["-e", item])
+    tmux_args.extend(["--", *command])
+    # Run setup in the same tmux command queue so even an immediate exit is
+    # retained. Exact session targeting avoids prefix collisions.
+    setup_target = f"={session}:"
+    tmux_args.extend(
+        [
+            ";",
+            "set-option",
+            "-p",
+            "-t",
+            setup_target,
+            "remain-on-exit",
+            "on",
+            ";",
+            "set-option",
+            "-w",
+            "-t",
+            setup_target,
+            "window-size",
+            "manual",
+        ]
+    )
+    pane = run_tmux(tmux_args).stdout
+    info = pane_info(pane)
+    info["action"] = "new-session"
+    info["command_line"] = command[0] if len(command) == 1 else shlex.join(command)
     emit(info)
 
 
-def cmd_send(args: argparse.Namespace) -> None:
-    if not args.literal and not args.key:
-        raise HarnessError("send requires at least one --literal or --key")
-
-    for text in args.literal:
-        send_literal(args.session, text)
-    if args.key:
-        run_tmux(["send-keys", "-t", args.session, *args.key])
+def cmd_send_keys(args: argparse.Namespace) -> None:
+    if not args.keys:
+        raise HarnessError("send-keys requires at least one key or text argument")
+    command = ["send-keys", "-t", args.target, "-N", str(args.repeat)]
+    if args.literal:
+        command.append("-l")
+    run_tmux([*command, "--", *args.keys])
     if args.pause_ms > 0:
         time.sleep(args.pause_ms / 1000.0)
 
-    info = session_info(args.session)
-    info["action"] = "send"
+    info = pane_info(args.target)
+    info["action"] = "send-keys"
     emit(info)
 
 
 def cmd_mouse_click(args: argparse.Namespace) -> None:
-    screen = capture_screen(args.session)
+    screen = capture_screen(args.target)
     row, col, match = resolve_click_like_target(
         screen,
         row=args.row,
@@ -1059,14 +1110,14 @@ def cmd_mouse_click(args: argparse.Namespace) -> None:
         ignore_case=args.ignore_case,
     )
     button_code = BUTTON_CODES[args.button]
-    send_literal(args.session, sgr_mouse(button_code, row, col))
+    send_literal(args.target, sgr_mouse(button_code, row, col))
     if args.hold_ms > 0:
         time.sleep(args.hold_ms / 1000.0)
-    send_literal(args.session, sgr_mouse(button_code, row, col, release=True))
+    send_literal(args.target, sgr_mouse(button_code, row, col, release=True))
     if args.pause_ms > 0:
         time.sleep(args.pause_ms / 1000.0)
 
-    info = session_info(args.session)
+    info = pane_info(args.target)
     info["action"] = "mouse"
     info["mouse_action"] = "click"
     info["button"] = args.button
@@ -1087,7 +1138,7 @@ def cmd_mouse_click(args: argparse.Namespace) -> None:
 def cmd_mouse_scroll(args: argparse.Namespace) -> None:
     if args.amount < 1:
         raise HarnessError(f"scroll amount must be at least 1, got {args.amount}")
-    screen = capture_screen(args.session)
+    screen = capture_screen(args.target)
     row, col, match = resolve_click_like_target(
         screen,
         row=args.row,
@@ -1099,11 +1150,11 @@ def cmd_mouse_scroll(args: argparse.Namespace) -> None:
     )
     code = SCROLL_CODES[args.direction]
     for _ in range(args.amount):
-        send_literal(args.session, sgr_mouse(code, row, col))
+        send_literal(args.target, sgr_mouse(code, row, col))
     if args.pause_ms > 0:
         time.sleep(args.pause_ms / 1000.0)
 
-    info = session_info(args.session)
+    info = pane_info(args.target)
     info["action"] = "mouse"
     info["mouse_action"] = "scroll"
     info["direction"] = args.direction
@@ -1125,7 +1176,7 @@ def cmd_mouse_scroll(args: argparse.Namespace) -> None:
 def cmd_mouse_drag(args: argparse.Namespace) -> None:
     if args.steps is not None and args.steps < 1:
         raise HarnessError(f"drag steps must be at least 1, got {args.steps}")
-    screen = capture_screen(args.session)
+    screen = capture_screen(args.target)
     start_row, start_col, start_match = resolve_drag_endpoint(
         screen,
         row=args.start_row,
@@ -1148,18 +1199,18 @@ def cmd_mouse_drag(args: argparse.Namespace) -> None:
     )
     button_code = BUTTON_CODES[args.button]
 
-    send_literal(args.session, sgr_mouse(button_code, start_row, start_col))
+    send_literal(args.target, sgr_mouse(button_code, start_row, start_col))
     points = drag_points(start_row, start_col, end_row, end_col, args.steps)
     motion_code = button_code + 32
     for row, col in points:
-        send_literal(args.session, sgr_mouse(motion_code, row, col))
+        send_literal(args.target, sgr_mouse(motion_code, row, col))
         if args.step_pause_ms > 0:
             time.sleep(args.step_pause_ms / 1000.0)
-    send_literal(args.session, sgr_mouse(button_code, end_row, end_col, release=True))
+    send_literal(args.target, sgr_mouse(button_code, end_row, end_col, release=True))
     if args.pause_ms > 0:
         time.sleep(args.pause_ms / 1000.0)
 
-    info = session_info(args.session)
+    info = pane_info(args.target)
     info["action"] = "mouse"
     info["mouse_action"] = "drag"
     info["button"] = args.button
@@ -1189,14 +1240,50 @@ def cmd_mouse_drag(args: argparse.Namespace) -> None:
     emit(info)
 
 
-def cmd_read(args: argparse.Namespace) -> None:
-    screen = capture_screen(args.session, history=args.history, full_history=args.full_history)
+def cmd_capture_pane(args: argparse.Namespace) -> None:
+    if args.raw and any(
+        (
+            args.lines,
+            args.cols,
+            args.number_lines,
+            args.ruler,
+            args.repr_mode,
+            args.tokens,
+        )
+    ):
+        raise HarnessError(
+            "capture-pane -p cannot be combined with JSON presentation options"
+        )
+    text = capture_text(
+        args.target,
+        ansi=args.ansi,
+        start_line=args.start_line,
+        end_line=args.end_line,
+        join_wrapped=args.join_wrapped,
+        preserve_trailing_spaces=args.preserve_trailing_spaces,
+    )
+    if args.raw:
+        sys.stdout.write(text)
+        return
+    info = pane_info(args.target)
+    tokens = tokenize_ansi(text)
+    rows = build_rows_from_tokens(
+        tokens, width_hint=parse_dimension(info["width"], "width")
+    )
+    screen = CapturedScreen(
+        info=info,
+        ansi_text=text,
+        tokens=tokens,
+        rows=rows,
+        width=max((len(row) for row in rows), default=int(info["width"])),
+        height=len(rows),
+    )
     row_range = resolve_range(args.lines, screen.height, "line")
     col_range = resolve_range(args.cols, screen.width, "column")
     rows = crop_rows(screen.rows, row_range, col_range)
 
     payload = dict(screen.info)
-    payload["action"] = "read"
+    payload["action"] = "capture-pane"
     payload.update(
         payload_for_rows(
             screen,
@@ -1210,6 +1297,17 @@ def cmd_read(args: argparse.Namespace) -> None:
             include_tokens=args.tokens,
         )
     )
+    # Preserve tmux's capture exactly unless an explicit JSON crop was requested.
+    # Parsed cells remain padded for coordinate inspection, not for raw output.
+    if not args.lines and not args.cols:
+        payload["text"] = text
+        payload["plain_text"] = "".join(
+            token["text"] for token in tokens if token["type"] == "text"
+        )
+        if args.repr_mode:
+            payload["repr_text"] = visible_repr_text(text)
+        if args.tokens:
+            payload["tokens"] = serialize_tokens(tokens)
     emit(payload)
 
 
@@ -1241,12 +1339,12 @@ def cmd_screenshot(args: argparse.Namespace) -> None:
             f"raster screenshot output must use a .png extension, got {str(output)!r}"
         )
 
-    info = session_info(args.session)
+    info = pane_info(args.target)
     ansi_text = capture_text(
-        args.session,
+        args.target,
         ansi=True,
-        history=args.history,
-        full_history=args.full_history,
+        start_line=args.start_line,
+        end_line=args.end_line,
         join_wrapped=False,
         preserve_trailing_spaces=True,
     )
@@ -1275,7 +1373,9 @@ def cmd_screenshot(args: argparse.Namespace) -> None:
             env=environment,
         )
     except OSError as exc:
-        raise HarnessError(f"failed to run freeze for raster screenshot: {exc}") from exc
+        raise HarnessError(
+            f"failed to run freeze for raster screenshot: {exc}"
+        ) from exc
 
     if completed.returncode != 0:
         detail = (
@@ -1301,7 +1401,9 @@ def cmd_screenshot(args: argparse.Namespace) -> None:
 
 
 def cmd_wait(args: argparse.Namespace) -> None:
-    baseline = capture_text(args.session, ansi=args.ansi, history=args.history, full_history=args.full_history)
+    baseline = capture_text(
+        args.target, ansi=args.ansi, start_line=args.start_line, end_line=args.end_line
+    )
     last = baseline
     stable_since = time.monotonic()
     saw_change = False
@@ -1309,11 +1411,16 @@ def cmd_wait(args: argparse.Namespace) -> None:
 
     while time.monotonic() <= deadline:
         time.sleep(args.poll_ms / 1000.0)
-        current = capture_text(args.session, ansi=args.ansi, history=args.history, full_history=args.full_history)
+        current = capture_text(
+            args.target,
+            ansi=args.ansi,
+            start_line=args.start_line,
+            end_line=args.end_line,
+        )
 
         if args.mode == "change":
             if current != baseline:
-                payload = session_info(args.session)
+                payload = pane_info(args.target)
                 payload["action"] = "wait"
                 payload["mode"] = args.mode
                 payload["changed"] = True
@@ -1329,7 +1436,7 @@ def cmd_wait(args: argparse.Namespace) -> None:
 
         stable_enough = (time.monotonic() - stable_since) * 1000.0 >= args.stable_ms
         if stable_enough and (saw_change or not args.require_change):
-            payload = session_info(args.session)
+            payload = pane_info(args.target)
             payload["action"] = "wait"
             payload["mode"] = args.mode
             payload["changed"] = saw_change
@@ -1337,14 +1444,16 @@ def cmd_wait(args: argparse.Namespace) -> None:
             emit(payload)
 
     fail(
-        f"timed out waiting for session {args.session!r}",
+        f"timed out waiting for pane {args.target!r}",
         detail=f"mode={args.mode} timeout_ms={args.timeout_ms}",
         exit_code=2,
     )
 
 
 def cmd_cell(args: argparse.Namespace) -> None:
-    screen = capture_screen(args.session, history=args.history, full_history=args.full_history)
+    screen = capture_screen(
+        args.target, start_line=args.start_line, end_line=args.end_line
+    )
     ensure_cell_bounds(screen, args.row, args.col, "cell")
     cell = screen.rows[args.row - 1][args.col - 1]
     payload = dict(screen.info)
@@ -1359,7 +1468,9 @@ def cmd_cell(args: argparse.Namespace) -> None:
 
 
 def cmd_region(args: argparse.Namespace) -> None:
-    screen = capture_screen(args.session, history=args.history, full_history=args.full_history)
+    screen = capture_screen(
+        args.target, start_line=args.start_line, end_line=args.end_line
+    )
     row_range = resolve_range(args.rows, screen.height, "row")
     col_range = resolve_range(args.cols, screen.width, "column")
     rows = crop_rows(screen.rows, row_range, col_range)
@@ -1399,7 +1510,9 @@ def cmd_region(args: argparse.Namespace) -> None:
 
 
 def cmd_find_text(args: argparse.Namespace) -> None:
-    screen = capture_screen(args.session, history=args.history, full_history=args.full_history)
+    screen = capture_screen(
+        args.target, start_line=args.start_line, end_line=args.end_line
+    )
     matches = find_matches_in_lines(
         plain_lines(screen.rows),
         args.text,
@@ -1425,14 +1538,17 @@ def cmd_find_text(args: argparse.Namespace) -> None:
 
 
 def cmd_snapshot(args: argparse.Namespace) -> None:
-    screen = capture_screen(args.session, history=args.history, full_history=args.full_history)
+    screen = capture_screen(
+        args.target, start_line=args.start_line, end_line=args.end_line
+    )
     name = sanitize_snapshot_name(args.name)
-    path = snapshot_path(args.session, name)
+    path = snapshot_path(args.target, name)
     if path.exists() and not args.overwrite:
-        raise HarnessError(f"snapshot {name!r} for session {args.session!r} already exists")
+        raise HarnessError(f"snapshot {name!r} for pane {args.target!r} already exists")
 
     data = {
-        "session": args.session,
+        "session": screen.info["session"],
+        "pane": screen.info["pane"],
         "name": name,
         "captured_at_epoch_ms": int(time.time() * 1000),
         "info": screen.info,
@@ -1451,15 +1567,17 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
 
 
 def cmd_diff(args: argparse.Namespace) -> None:
-    before_snapshot = load_snapshot(args.session, args.before)
+    before_snapshot = load_snapshot(args.target, args.before)
     before_screen = build_screen_from_snapshot(before_snapshot)
 
     if args.after:
-        after_snapshot = load_snapshot(args.session, args.after)
+        after_snapshot = load_snapshot(args.target, args.after)
         after_screen = build_screen_from_snapshot(after_snapshot)
         after_label = args.after
     else:
-        after_screen = capture_screen(args.session)
+        after_screen = capture_screen(
+            args.target, start_line=args.start_line, end_line=args.end_line
+        )
         after_label = "current"
 
     max_height = max(before_screen.height, after_screen.height)
@@ -1483,7 +1601,9 @@ def cmd_diff(args: argparse.Namespace) -> None:
     if bbox and not args.lines and not args.cols:
         preview_row_range = (bbox["start_row"], bbox["end_row"])
         preview_col_range = (bbox["start_col"], bbox["end_col"])
-        before_rows = crop_rows(before_screen.rows, preview_row_range, preview_col_range)
+        before_rows = crop_rows(
+            before_screen.rows, preview_row_range, preview_col_range
+        )
         after_rows = crop_rows(after_screen.rows, preview_row_range, preview_col_range)
 
     payload = dict(after_screen.info)
@@ -1492,8 +1612,12 @@ def cmd_diff(args: argparse.Namespace) -> None:
     payload["after"] = after_label
     payload["style_only"] = args.style_only
     payload["changed_cell_count"] = len(changes)
-    payload["style_change_count"] = sum(1 for change in changes if change["style_changed"])
-    payload["text_change_count"] = sum(1 for change in changes if change["text_changed"])
+    payload["style_change_count"] = sum(
+        1 for change in changes if change["style_changed"]
+    )
+    payload["text_change_count"] = sum(
+        1 for change in changes if change["text_changed"]
+    )
     payload["bounding_box"] = bbox
     payload["changes"] = changes[: args.max_changes]
     payload["changes_truncated"] = len(changes) > args.max_changes
@@ -1522,44 +1646,55 @@ def cmd_diff(args: argparse.Namespace) -> None:
     emit(payload)
 
 
-def cmd_resize(args: argparse.Namespace) -> None:
-    run_tmux(
-        [
-            "resize-window",
-            "-t",
-            args.session,
-            "-x",
-            str(args.width),
-            "-y",
-            str(args.height),
-        ]
-    )
-    info = session_info(args.session)
-    info["action"] = "resize"
+def cmd_resize_window(args: argparse.Namespace) -> None:
+    if args.width is None and args.height is None:
+        raise HarnessError("resize-window requires -x and/or -y")
+    info = pane_info(args.target)
+    command = ["resize-window", "-t", info["window"]]
+    if args.width is not None:
+        command.extend(["-x", str(args.width)])
+    if args.height is not None:
+        command.extend(["-y", str(args.height)])
+    run_tmux(command)
+    info = pane_info(info["pane"])
+    info["action"] = "resize-window"
     emit(info)
 
 
 def cmd_info(args: argparse.Namespace) -> None:
-    info = session_info(args.session)
+    info = pane_info(args.target)
     info["action"] = "info"
     emit(info)
 
 
-def cmd_stop(args: argparse.Namespace) -> None:
-    if not session_exists(args.session):
+def cmd_kill_session(args: argparse.Namespace) -> None:
+    if not session_exists(args.target):
         if args.ignore_missing:
-            emit({"action": "stop", "ok": True, "session": args.session, "stopped": False})
-        raise HarnessError(f"session {args.session!r} does not exist")
+            emit(
+                {
+                    "action": "kill-session",
+                    "ok": True,
+                    "session": args.target,
+                    "stopped": False,
+                }
+            )
+        raise HarnessError(f"session {args.target!r} does not exist")
 
-    run_tmux(["kill-session", "-t", args.session])
-    emit({"action": "stop", "ok": True, "session": args.session, "stopped": True})
+    run_tmux(["kill-session", "-t", args.target])
+    emit(
+        {"action": "kill-session", "ok": True, "session": args.target, "stopped": True}
+    )
 
 
-def cmd_sessions(args: argparse.Namespace) -> None:
+def cmd_list_sessions(args: argparse.Namespace) -> None:
     # List sessions on the *current* socket only. On the private harness server
     # these are all ours; on --shared these are the user's, so treat read-only.
     result = run_tmux(
-        ["list-sessions", "-F", "#{session_name}\t#{session_windows}\t#{session_attached}"],
+        [
+            "list-sessions",
+            "-F",
+            "#{session_name}\t#{session_windows}\t#{session_attached}",
+        ],
         check=False,
     )
     sessions = []
@@ -1577,10 +1712,10 @@ def cmd_sessions(args: argparse.Namespace) -> None:
         )
     emit(
         {
-            "action": "sessions",
+            "action": "list-sessions",
             "ok": True,
             "socket": TMUX_SOCKET,
-            "shared": TMUX_SOCKET is None,
+            "shared": TMUX_SOCKET in (None, "default"),
             "sessions": sessions,
         }
     )
@@ -1591,7 +1726,7 @@ def cmd_kill_server(args: argparse.Namespace) -> None:
     # even — on the harness's private server, which is ours to recycle. On the
     # user's default server it would destroy their work, so refuse hard unless the
     # caller has explicitly confirmed intent with the user (--i-am-sure).
-    if TMUX_SOCKET is None and not args.i_am_sure:
+    if TMUX_SOCKET in (None, "default") and not args.i_am_sure:
         raise HarnessError(
             "refusing to kill-server on the user's DEFAULT tmux server: this would "
             "destroy all of their sessions. Run against the private harness socket "
@@ -1603,28 +1738,87 @@ def cmd_kill_server(args: argparse.Namespace) -> None:
             "action": "kill-server",
             "ok": True,
             "socket": TMUX_SOCKET,
-            "shared": TMUX_SOCKET is None,
+            "shared": TMUX_SOCKET in (None, "default"),
         }
     )
 
 
 def add_capture_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--history", type=int, help="Include N lines of scrollback")
     parser.add_argument(
-        "--full-history",
-        action="store_true",
-        help="Include full scrollback history",
+        "-S",
+        dest="start_line",
+        metavar="START",
+        type=capture_line,
+        help="First capture line: 0 is visible top, negative is history, '-' is history start",
+    )
+    parser.add_argument(
+        "-E",
+        dest="end_line",
+        metavar="END",
+        type=capture_line,
+        help="Last capture line: 0 is visible top, negative is history, '-' is visible bottom",
     )
 
 
-def add_display_flags(parser: argparse.ArgumentParser) -> None:
+def capture_line(value: str) -> str:
+    if value != "-":
+        try:
+            int(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(
+                "capture line must be an integer or '-'"
+            ) from exc
+    return value
+
+
+def positive_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected a positive integer") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("expected a positive integer")
+    return parsed
+
+
+def socket_label(value: str) -> str:
+    if not value:
+        raise argparse.ArgumentTypeError(
+            "socket label cannot be empty; use --shared for the user's server"
+        )
+    return value
+
+
+def add_target(parser: argparse.ArgumentParser, kind: str = "pane") -> None:
     parser.add_argument(
-        "--plain",
-        dest="ansi",
-        action="store_false",
-        help="Strip ANSI escape codes and render plain text only",
+        "-t",
+        dest="target",
+        required=True,
+        metavar="TARGET",
+        help=f"tmux {kind} target"
+        + (": SESSION, SESSION:WINDOW.PANE, or %%ID" if kind == "pane" else ""),
     )
-    parser.set_defaults(ansi=True)
+    parser.set_defaults(target_kind=kind)
+
+
+def add_display_flags(
+    parser: argparse.ArgumentParser, *, native_capture: bool = False
+) -> None:
+    if native_capture:
+        parser.add_argument(
+            "-e",
+            dest="ansi",
+            action="store_true",
+            help="Include ANSI text/background attributes",
+        )
+    else:
+        parser.add_argument(
+            "--plain",
+            dest="ansi",
+            action="store_false",
+            help="Render plain text instead of ANSI styles",
+        )
+        parser.set_defaults(ansi=True)
     parser.add_argument(
         "--number-lines",
         action="store_true",
@@ -1656,7 +1850,9 @@ def add_range_flags(parser: argparse.ArgumentParser) -> None:
 def add_text_target_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--row", type=int, help="1-based row in the pane")
     parser.add_argument("--col", type=int, help="1-based column in the pane")
-    parser.add_argument("--text", help="Click or scroll at a matching text span instead of row,col")
+    parser.add_argument(
+        "--text", help="Click or scroll at a matching text span instead of row,col"
+    )
     parser.add_argument(
         "--anchor",
         choices=ANCHORS,
@@ -1680,8 +1876,11 @@ def build_common_parser() -> argparse.ArgumentParser:
     """Server-isolation flags shared by every subcommand (added via parents=)."""
     common = argparse.ArgumentParser(add_help=False)
     group = common.add_argument_group("server isolation")
-    group.add_argument(
-        "--socket",
+    servers = group.add_mutually_exclusive_group()
+    servers.add_argument(
+        "-L",
+        dest="socket",
+        type=socket_label,
         default=DEFAULT_SOCKET,
         metavar="LABEL",
         help=(
@@ -1690,7 +1889,7 @@ def build_common_parser() -> argparse.ArgumentParser:
             "the harness's to own — kill/recreate it freely."
         ),
     )
-    group.add_argument(
+    servers.add_argument(
         "--shared",
         action="store_true",
         help=(
@@ -1706,48 +1905,81 @@ def build_common_parser() -> argparse.ArgumentParser:
 
 def build_parser() -> argparse.ArgumentParser:
     # Server-isolation flags are global: they go BEFORE the subcommand, e.g.
-    #   tmux_tui_harness.py --shared sessions
-    #   tmux_tui_harness.py --socket my-server start -- cmd
+    #   tmux_tui_harness.py --shared list-sessions
+    #   tmux_tui_harness.py -L my-server new-session -- cmd
     # The default (no flag) uses the private harness server, isolated from the
     # user's interactive tmux.
     parser = argparse.ArgumentParser(
-        description="Launch and inspect TUIs in tmux with JSON output.",
+        description="Test TUIs using tmux command syntax and JSON results (capture-pane -p emits raw text).",
+        epilog="Supported tmux operations plus explicit testing extensions; use COMMAND --help for the supported flags. "
+        "Sessions are detached, targets are explicit, and the default server is private.",
         parents=[build_common_parser()],
     )
     subparsers = parser.add_subparsers(dest="action", required=True)
 
     start = subparsers.add_parser(
-        "start", help="Start a detached tmux session"
+        "new-session",
+        aliases=["new"],
+        help="Create a detached tmux session (default 120x40)",
     )
-    start.add_argument("--session", help="Explicit tmux session name")
-    start.add_argument("--cwd", help="Working directory for the command")
-    start.add_argument("--width", type=int, default=120, help="Pane width")
-    start.add_argument("--height", type=int, default=40, help="Pane height")
     start.add_argument(
-        "--env",
+        "-d", action="store_true", help="Detached startup (already the harness default)"
+    )
+    start.add_argument(
+        "-s",
+        dest="session",
+        metavar="NAME",
+        help="Session name; generated when omitted",
+    )
+    start.add_argument("-c", dest="cwd", metavar="DIR", help="Working directory")
+    start.add_argument(
+        "-x",
+        dest="width",
+        type=positive_int,
+        default=120,
+        help="Initial width (default: 120)",
+    )
+    start.add_argument(
+        "-y",
+        dest="height",
+        type=positive_int,
+        default=40,
+        help="Initial height (default: 40)",
+    )
+    start.add_argument(
+        "-e",
+        dest="env",
         action="append",
         default=[],
         metavar="KEY=VALUE",
-        help="Environment variable to inject into the command",
+        help="Session environment assignment; repeat for multiple variables",
     )
-    start.add_argument("argv", nargs=argparse.REMAINDER, help="Command to run after --")
-    start.set_defaults(func=cmd_start)
+    start.add_argument(
+        "argv",
+        nargs=argparse.REMAINDER,
+        help="Optional shell-command [arguments ...]; -- ends harness options",
+    )
+    start.set_defaults(func=cmd_new_session, action="new-session")
 
     send = subparsers.add_parser(
-        "send", help="Send keys or literal text to a session"
+        "send-keys",
+        aliases=["send"],
+        help="Send ordered positional keys/text to a pane",
     )
-    send.add_argument("session", help="tmux session name")
+    add_target(send)
     send.add_argument(
-        "--literal",
-        action="append",
-        default=[],
-        help="Literal text to send verbatim",
+        "-l",
+        dest="literal",
+        action="store_true",
+        help="Send all arguments literally, without key-name lookup",
     )
     send.add_argument(
-        "--key",
-        action="append",
-        default=[],
-        help="Named tmux key such as Enter or C-c",
+        "-N",
+        dest="repeat",
+        type=positive_int,
+        default=1,
+        metavar="COUNT",
+        help="tmux repeat count",
     )
     send.add_argument(
         "--pause-ms",
@@ -1755,15 +1987,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Optional pause after sending input",
     )
-    send.set_defaults(func=cmd_send)
+    send.add_argument(
+        "keys",
+        nargs="*",
+        help="Keys such as Down, Enter, C-c, or text; sent in argument order",
+    )
+    send.set_defaults(func=cmd_send_keys, action="send-keys")
 
-    mouse = subparsers.add_parser("mouse", help="Send mouse events to a session")
+    mouse = subparsers.add_parser("mouse", help="Send mouse events to a pane")
     mouse_subparsers = mouse.add_subparsers(dest="mouse_action", required=True)
 
-    click = mouse_subparsers.add_parser(
-        "click", help="Send a mouse click"
-    )
-    click.add_argument("session", help="tmux session name")
+    click = mouse_subparsers.add_parser("click", help="Send a mouse click")
+    add_target(click)
     add_text_target_args(click)
     click.add_argument(
         "--button",
@@ -1771,14 +2006,19 @@ def build_parser() -> argparse.ArgumentParser:
         default="left",
         help="Mouse button to click",
     )
-    click.add_argument("--hold-ms", type=int, default=0, help="Optional press duration before release")
-    click.add_argument("--pause-ms", type=int, default=0, help="Optional pause after the click sequence")
+    click.add_argument(
+        "--hold-ms", type=int, default=0, help="Optional press duration before release"
+    )
+    click.add_argument(
+        "--pause-ms",
+        type=int,
+        default=0,
+        help="Optional pause after the click sequence",
+    )
     click.set_defaults(func=cmd_mouse_click)
 
-    scroll = mouse_subparsers.add_parser(
-        "scroll", help="Send mouse wheel events"
-    )
-    scroll.add_argument("session", help="tmux session name")
+    scroll = mouse_subparsers.add_parser("scroll", help="Send mouse wheel events")
+    add_target(scroll)
     add_text_target_args(scroll)
     scroll.add_argument(
         "--direction",
@@ -1786,14 +2026,19 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Scroll direction",
     )
-    scroll.add_argument("--amount", type=int, default=1, help="Number of wheel events to send")
-    scroll.add_argument("--pause-ms", type=int, default=0, help="Optional pause after the scroll sequence")
+    scroll.add_argument(
+        "--amount", type=int, default=1, help="Number of wheel events to send"
+    )
+    scroll.add_argument(
+        "--pause-ms",
+        type=int,
+        default=0,
+        help="Optional pause after the scroll sequence",
+    )
     scroll.set_defaults(func=cmd_mouse_scroll)
 
-    drag = mouse_subparsers.add_parser(
-        "drag", help="Send a click-and-drag gesture"
-    )
-    drag.add_argument("session", help="tmux session name")
+    drag = mouse_subparsers.add_parser("drag", help="Send a click-and-drag gesture")
+    add_target(drag)
     drag.add_argument("--start-row", type=int, help="1-based drag start row")
     drag.add_argument("--start-col", type=int, help="1-based drag start column")
     drag.add_argument("--end-row", type=int, help="1-based drag end row")
@@ -1812,8 +2057,18 @@ def build_parser() -> argparse.ArgumentParser:
         default="center",
         help="Anchor within the end text match",
     )
-    drag.add_argument("--start-match-index", type=int, default=1, help="1-based start text match occurrence")
-    drag.add_argument("--end-match-index", type=int, default=1, help="1-based end text match occurrence")
+    drag.add_argument(
+        "--start-match-index",
+        type=int,
+        default=1,
+        help="1-based start text match occurrence",
+    )
+    drag.add_argument(
+        "--end-match-index",
+        type=int,
+        default=1,
+        help="1-based end text match occurrence",
+    )
     drag.add_argument(
         "--ignore-case",
         action="store_true",
@@ -1830,23 +2085,50 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Number of motion events between start and end; defaults to path length",
     )
-    drag.add_argument("--step-pause-ms", type=int, default=0, help="Optional pause between motion events")
-    drag.add_argument("--pause-ms", type=int, default=0, help="Optional pause after the drag sequence")
+    drag.add_argument(
+        "--step-pause-ms",
+        type=int,
+        default=0,
+        help="Optional pause between motion events",
+    )
+    drag.add_argument(
+        "--pause-ms", type=int, default=0, help="Optional pause after the drag sequence"
+    )
     drag.set_defaults(func=cmd_mouse_drag)
 
     read = subparsers.add_parser(
-        "read", help="Capture the current pane text"
+        "capture-pane",
+        aliases=["capturep"],
+        help="Capture pane text; plain JSON by default, -e for ANSI, -p for raw stdout",
     )
-    read.add_argument("session", help="tmux session name")
+    add_target(read)
     add_capture_args(read)
-    add_display_flags(read)
+    add_display_flags(read, native_capture=True)
     add_range_flags(read)
-    read.set_defaults(func=cmd_read)
+    read.add_argument(
+        "-J",
+        dest="join_wrapped",
+        action="store_true",
+        help="Join wrapped rows (also preserves trailing spaces)",
+    )
+    read.add_argument(
+        "-N",
+        dest="preserve_trailing_spaces",
+        action="store_true",
+        help="Preserve trailing spaces",
+    )
+    read.add_argument(
+        "-p",
+        dest="raw",
+        action="store_true",
+        help="Write exact tmux capture to stdout; no JSON or presentation options",
+    )
+    read.set_defaults(func=cmd_capture_pane, action="capture-pane")
 
     screenshot = subparsers.add_parser(
         "screenshot", help="Render the current pane to a PNG with freeze"
     )
-    screenshot.add_argument("session", help="tmux session or pane target")
+    add_target(screenshot)
     screenshot.add_argument(
         "--output",
         required=True,
@@ -1874,9 +2156,10 @@ def build_parser() -> argparse.ArgumentParser:
     screenshot.set_defaults(func=cmd_screenshot)
 
     wait = subparsers.add_parser(
-        "wait", help="Wait for screen change or stability"
+        "wait",
+        help="Wait for screen change or stability (not tmux channel synchronization)",
     )
-    wait.add_argument("session", help="tmux session name")
+    add_target(wait)
     wait.add_argument(
         "--mode",
         choices=("stable", "change"),
@@ -1906,10 +2189,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_capture_args(wait)
     wait.set_defaults(func=cmd_wait)
 
-    cell = subparsers.add_parser(
-        "cell", help="Inspect one cell at row,col"
-    )
-    cell.add_argument("session", help="tmux session name")
+    cell = subparsers.add_parser("cell", help="Inspect one cell at row,col")
+    add_target(cell)
     cell.add_argument("--row", type=int, required=True, help="1-based row")
     cell.add_argument("--col", type=int, required=True, help="1-based column")
     add_capture_args(cell)
@@ -1918,10 +2199,12 @@ def build_parser() -> argparse.ArgumentParser:
     region = subparsers.add_parser(
         "region", help="Inspect a cropped region of the pane"
     )
-    region.add_argument("session", help="tmux session name")
+    add_target(region)
     region.add_argument("--rows", help="Inclusive row range like 10:20")
     region.add_argument("--cols", help="Inclusive column range like 5:80")
-    region.add_argument("--styles", action="store_true", help="Include per-cell style information")
+    region.add_argument(
+        "--styles", action="store_true", help="Include per-cell style information"
+    )
     add_capture_args(region)
     add_display_flags(region)
     region.set_defaults(func=cmd_region)
@@ -1929,19 +2212,27 @@ def build_parser() -> argparse.ArgumentParser:
     find_text = subparsers.add_parser(
         "find-text", help="Find text and return row,col spans"
     )
-    find_text.add_argument("session", help="tmux session name")
+    add_target(find_text)
     find_text.add_argument("--text", required=True, help="Text to search for")
-    find_text.add_argument("--ignore-case", action="store_true", help="Search case-insensitively")
-    find_text.add_argument("--max-results", type=int, default=20, help="Maximum matches to return")
+    find_text.add_argument(
+        "--ignore-case", action="store_true", help="Search case-insensitively"
+    )
+    find_text.add_argument(
+        "--max-results", type=int, default=20, help="Maximum matches to return"
+    )
     add_capture_args(find_text)
     find_text.set_defaults(func=cmd_find_text)
 
     snapshot = subparsers.add_parser(
         "snapshot", help="Save the current screen for later diffing"
     )
-    snapshot.add_argument("session", help="tmux session name")
+    add_target(snapshot)
     snapshot.add_argument("--name", required=True, help="Snapshot name")
-    snapshot.add_argument("--overwrite", action="store_true", help="Replace an existing snapshot of the same name")
+    snapshot.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace an existing snapshot of the same name",
+    )
     add_capture_args(snapshot)
     snapshot.set_defaults(func=cmd_snapshot)
 
@@ -1949,41 +2240,59 @@ def build_parser() -> argparse.ArgumentParser:
         "diff",
         help="Compare saved snapshots or a snapshot against the current screen",
     )
-    diff.add_argument("session", help="tmux session name")
-    diff.add_argument("--before", required=True, help="Snapshot name for the baseline state")
-    diff.add_argument("--after", help="Snapshot name for the comparison state; defaults to the current screen")
-    diff.add_argument("--style-only", action="store_true", help="Only report cells with style changes and identical text")
-    diff.add_argument("--max-changes", type=int, default=200, help="Maximum changed cells to include in the JSON payload")
+    add_target(diff)
+    diff.add_argument(
+        "--before", required=True, help="Snapshot name for the baseline state"
+    )
+    diff.add_argument(
+        "--after",
+        help="Snapshot name for the comparison state; defaults to the current screen",
+    )
+    diff.add_argument(
+        "--style-only",
+        action="store_true",
+        help="Only report cells with style changes and identical text",
+    )
+    diff.add_argument(
+        "--max-changes",
+        type=int,
+        default=200,
+        help="Maximum changed cells to include in the JSON payload",
+    )
     add_display_flags(diff)
     add_range_flags(diff)
+    add_capture_args(diff)
     diff.set_defaults(func=cmd_diff)
 
     resize = subparsers.add_parser(
-        "resize", help="Resize the tmux window"
+        "resize-window",
+        aliases=["resizew"],
+        help="Resize a window to -x width and/or -y height",
     )
-    resize.add_argument("session", help="tmux session name")
-    resize.add_argument("--width", type=int, required=True, help="Pane width")
-    resize.add_argument("--height", type=int, required=True, help="Pane height")
-    resize.set_defaults(func=cmd_resize)
+    add_target(resize, "window")
+    resize.add_argument("-x", dest="width", type=positive_int, help="Window width")
+    resize.add_argument("-y", dest="height", type=positive_int, help="Window height")
+    resize.set_defaults(func=cmd_resize_window, action="resize-window")
 
-    info = subparsers.add_parser(
-        "info", help="Inspect the session metadata"
-    )
-    info.add_argument("session", help="tmux session name")
+    info = subparsers.add_parser("info", help="Inspect the resolved pane metadata")
+    add_target(info)
     info.set_defaults(func=cmd_info)
 
-    stop = subparsers.add_parser(
-        "stop", help="Kill the tmux session"
+    stop = subparsers.add_parser("kill-session", help="Destroy the target session")
+    add_target(stop, "session")
+    stop.add_argument(
+        "--ignore-missing",
+        action="store_true",
+        help="Treat a missing session as a successful no-op",
     )
-    stop.add_argument("session", help="tmux session name")
-    stop.add_argument("--ignore-missing", action="store_true", help="Treat a missing session as a successful no-op")
-    stop.set_defaults(func=cmd_stop)
+    stop.set_defaults(func=cmd_kill_session)
 
     sessions = subparsers.add_parser(
-        "sessions",
+        "list-sessions",
+        aliases=["ls"],
         help="List sessions on the current socket (all ours on the private server)",
     )
-    sessions.set_defaults(func=cmd_sessions)
+    sessions.set_defaults(func=cmd_list_sessions, action="list-sessions")
 
     kill_server = subparsers.add_parser(
         "kill-server",
@@ -2009,10 +2318,21 @@ def main() -> None:
     # Select the tmux server socket for this invocation. Default: the private
     # harness server. --shared => the user's default server (no -L).
     global TMUX_SOCKET
-    TMUX_SOCKET = None if getattr(args, "shared", False) else getattr(args, "socket", DEFAULT_SOCKET)
+    TMUX_SOCKET = (
+        None
+        if getattr(args, "shared", False)
+        else getattr(args, "socket", DEFAULT_SOCKET)
+    )
     try:
+        if getattr(args, "target_kind", None) == "pane":
+            # Bind once to a pane ID. Later metadata refreshes cannot follow a
+            # different active pane if focus changes during input or waiting.
+            args.target = pane_info(args.target)["pane"]
         args.func(args)
     except HarnessError as exc:
+        if getattr(args, "raw", False):
+            print(f"tmux_tui_harness.py: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
         fail(str(exc))
 
 

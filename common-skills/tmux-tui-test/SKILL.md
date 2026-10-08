@@ -1,19 +1,20 @@
 ---
 name: tmux-tui-test
-description: Use when you need to launch, drive, or inspect a terminal UI or other interactive CLI that requires a real TTY. Covers detached tmux sessions, deterministic terminal sizing, key injection, text and raster screenshot capture, redraw/stability waits, and clean teardown. Use for autonomous testing and debugging of TUIs, curses apps, full-screen CLIs, or any command that breaks under plain stdout capture.
+description: Use when you need to launch, drive, or inspect a terminal UI or interactive CLI that requires a real TTY. Provides tmux command syntax, detached sessions, deterministic sizing, ordered input, text/style and raster captures, redraw waits, and clean teardown. Use for autonomous TUI testing and debugging or commands that break under plain stdout capture.
 ---
 
 # Tmux TUI Test
 
-Use `tmux` as the TTY backend for interactive terminal apps. Prefer the bundled harness over ad hoc `tmux` commands so session lifecycle, captures, waits, targeting, diffs, and post-exit inspection stay consistent.
+Use the bundled harness for real-TTY testing. Operations shared with tmux use
+its command names, flags, argument order, and targeting. Additional commands
+provide synchronization, cell/style inspection, snapshots, and raster screenshots.
+Consult `COMMAND --help` for the supported subset of tmux flags.
 
-## Harness Location
+## Harness location
 
-The harness and Freeze execution helper are in `scripts/` within this skill
-directory. Set their paths once per session:
+Resolve the harness and Freeze helper from this skill's `scripts/` directory:
 
 ```bash
-# Resolve from whichever skills directory has the symlink
 if [ -f ~/.claude/skills/tmux-tui-test/scripts/tmux_tui_harness.py ]; then
   HARNESS=~/.claude/skills/tmux-tui-test/scripts/tmux_tui_harness.py
 elif [ -f ~/.codex/skills/tmux-tui-test/scripts/tmux_tui_harness.py ]; then
@@ -22,332 +23,215 @@ fi
 FREEZE_EXEC="$(dirname "$HARNESS")/freeze_exec.sh"
 ```
 
-All examples below use `$HARNESS`; direct Freeze examples use `$FREEZE_EXEC`.
+## Differences from tmux
 
-## Server Isolation (important when you run inside tmux)
+- The default server is private: `tmux -L tui-harness`. Its sessions are available
+  for testing and cleanup without affecting the user's interactive server.
+- Sessions are always detached; explicit `-d` is accepted. Names are generated
+  when `-s` is omitted; default geometry is 120×40. The harness pins geometry
+  with `window-size manual` and retains exited panes with `remain-on-exit`.
+- Targets are explicit: pane, window, and session operations require `-t`.
+  Reuse the returned `pane` ID to stay on the same pane even if focus changes.
+- Results are JSON by default. `capture-pane -p` writes the exact tmux capture
+  to stdout, including trailing newlines; errors go to stderr with nonzero status.
+  Captures without `-p` do not create tmux paste buffers.
+- Supported flags are listed in help; the harness is not a general command passthrough.
 
-By default the harness runs on its **own private tmux server** — a dedicated
-socket (`tmux -L tui-harness`), separate from the user's interactive tmux. This
-matters: if you (the agent) are running inside the user's tmux, driving sessions
-on the *default* server can resize, kill, or otherwise disrupt the user's own
-window. The private socket makes that impossible — a different server process
-cannot touch the user's sessions.
-
-- **Default (recommended): do nothing.** Every command already targets the
-  private server. Treat that server as *yours*: create, kill, and recreate
-  sessions on it freely. `kill-server` on it is fine and expected.
-- The private server's geometry is pinned (`window-size manual`), so a pane you
-  start at `--width W --height H` keeps that size even though no client is
-  attached — captures stay deterministic.
-
-Manage the private server:
+Global `-L LABEL` goes **before** the command and selects another server:
 
 ```bash
-python3 "$HARNESS" sessions           # list sessions on the private server (all yours)
-python3 "$HARNESS" kill-server        # tear the whole private server down (safe; recreate on next start)
+python3 "$HARNESS" -L my-test list-sessions
+python3 "$HARNESS" -L my-test new-session -s demo -c /abs/project -x 120 -y 40 -- ./app
 ```
 
-### Opting into the user's real tmux (`--shared`)
-
-Only when you have a legitimate reason to observe the user's *actual* sessions
-(e.g. they ask you to look at something already running in their tmux), pass the
-global `--shared` flag. It goes **before** the subcommand:
+`--shared` selects the user's existing server and is mutually exclusive with
+`-L`. Use it only when the user asks to inspect their actual sessions. Behave as
+a guest: avoid killing sessions you did not create, resizing their windows, or
+changing global options. `kill-server` requires `--i-am-sure` on `--shared` or
+`-L default`; use that override only after the user explicitly confirms.
 
 ```bash
-python3 "$HARNESS" --shared sessions          # list the user's real sessions (read-only intent)
-python3 "$HARNESS" --shared read their-session --plain
+python3 "$HARNESS" --shared list-sessions
+python3 "$HARNESS" --shared capture-pane -t their-session
 ```
 
-On the shared server, behave like a guest:
+## Quick start
 
-- **Confirm with the user first**, and avoid destructive or disruptive
-  server-wide actions: no `kill-server`, don't `stop` sessions you did not
-  create, don't change global options or resize their windows.
-- `kill-server` is refused on `--shared` unless you also pass `--i-am-sure`
-  (only after the user explicitly confirms).
-
-`--socket LABEL` (also global, before the subcommand) targets a differently
-named private server if you ever need more than one.
-
-## Quick Start
-
-1. Start the app in a detached session.
+Launch in the correct project directory with explicit dimensions:
 
 ```bash
-python3 "$HARNESS" start --cwd /abs/project --width 120 --height 40 -- cargo run -- -g
+python3 "$HARNESS" new-session -d -c /abs/project -x 120 -y 40 -- cargo run -- -g
 ```
 
-2. Save the `session` value from the JSON response.
-
-3. Wait for the first stable screen.
+Save `session` for lifecycle operations and `pane` for inspection/input. Examples
+use `PANE` and `SESSION` as placeholders for those returned values.
 
 ```bash
-python3 "$HARNESS" wait SESSION --mode stable --timeout-ms 5000
+python3 "$HARNESS" wait -t PANE --mode stable --timeout-ms 5000
+python3 "$HARNESS" capture-pane -t PANE --number-lines --ruler
+python3 "$HARNESS" send-keys -t PANE -l "query"
+python3 "$HARNESS" send-keys -t PANE Enter
+python3 "$HARNESS" wait -t PANE --mode stable --timeout-ms 3000 --plain
+python3 "$HARNESS" capture-pane -t PANE
+python3 "$HARNESS" kill-session -t SESSION
 ```
 
-4. Read the current screen with line numbers and a ruler when you need targeting help.
+Keep an essential capture separate from a fallible wait: `wait && capture-pane`
+hides the screen on timeout. Use separate calls or `;` when evidence is needed
+regardless of timeout.
+
+## Commands and targets
+
+| Command | Supported tmux syntax / testing extensions |
+| --- | --- |
+| `new-session` (`new`) | `[-d] [-s NAME] [-c DIR] [-x WIDTH] [-y HEIGHT] [-e KEY=VALUE ...] [--] [shell-command [argument ...]]` |
+| `send-keys` (`send`) | `-t TARGET [-l] [-N COUNT] [--pause-ms MS] [--] key ...` |
+| `capture-pane` (`capturep`) | `-t TARGET [-e] [-J] [-N] [-S START] [-E END] [-p]`; JSON presentation flags below |
+| `resize-window` (`resizew`) | `-t TARGET [-x WIDTH] [-y HEIGHT]`; at least one dimension |
+| `kill-session` | `-t TARGET [--ignore-missing]` |
+| `list-sessions` (`ls`) | List sessions on the selected server |
+| `kill-server` | Tear down the selected server; shared-server guard above |
+| `info`, `wait`, `mouse`, `cell`, `region`, `find-text`, `snapshot`, `diff`, `screenshot` | Harness inspection commands, all with `-t TARGET` |
+
+Pane commands accept `SESSION`, `SESSION:WINDOW.PANE`, and `%ID`. A session
+target selects its active pane, not its first pane. Window targets include
+`SESSION:WINDOW` and `@ID`; session targets include names and `$ID`. Metadata
+identifies the resolved session/window/pane and reports **pane** dimensions,
+process state, cursor state, and mouse flags.
+
+`new-session` follows tmux execution rules: one command argument is interpreted
+by the shell, multiple arguments execute directly, and omission starts the
+default shell. Repeat `-e KEY=VALUE` for session environment. `--` ends harness
+option parsing before the command.
 
 ```bash
-python3 "$HARNESS" read SESSION --plain --number-lines --ruler
+python3 "$HARNESS" new-session -c /abs/project -e MODE=test -e TERM=xterm-256color -- ./app --debug
+python3 "$HARNESS" new-session -c /abs/project -- 'make build && exec ./app'
 ```
 
-5. Interact, then wait and read again.
+Input arguments are sent sequentially. Recognized key names become keys;
+unrecognized strings become text. `-l` makes **every** argument literal, including
+`Enter`. `-N` follows tmux's repeat semantics.
 
 ```bash
-python3 "$HARNESS" send SESSION --literal "query"
-python3 "$HARNESS" wait SESSION --mode stable --timeout-ms 3000 --plain
-python3 "$HARNESS" read SESSION --plain
+python3 "$HARNESS" send-keys -t PANE Down Down Enter
+python3 "$HARNESS" send-keys -t PANE C-u "query" Enter
+python3 "$HARNESS" send-keys -t PANE -N 3 Down
+python3 "$HARNESS" send-keys -t PANE -l "Enter"
+python3 "$HARNESS" send-keys -t PANE Enter --pause-ms 100
 ```
 
-6. If `freeze` is available, render and visually inspect a fresh screenshot after
-   implementing a feature or significant code change.
+## Capture and coordinates
+
+`capture-pane` returns plain text by default. `-e` includes ANSI attributes;
+`-J` joins wrapped rows and preserves trailing spaces; `-N` preserves trailing
+spaces without joining. Otherwise physical screen rows remain separate.
+
+`-S` and `-E` select native tmux capture lines: **0 is the first visible row**,
+negative values address scrollback, and endpoints are inclusive. `-S -` starts
+at history's beginning; `-E -` ends at the visible bottom. The default captures
+only the visible pane. These flags also work on other screen-capturing commands,
+including `wait` and `screenshot`; on `diff` they apply to the current-screen
+comparison when `--after` is omitted.
 
 ```bash
-python3 "$HARNESS" screenshot SESSION --output /absolute/path/pane.png
+python3 "$HARNESS" capture-pane -t PANE -S -200
+python3 "$HARNESS" capture-pane -t PANE -S -
+python3 "$HARNESS" capture-pane -t PANE -S 0 -E 4 -e
+python3 "$HARNESS" capture-pane -t PANE -pe -N
 ```
 
-Open and examine the resulting PNG. A successful command only proves that the
-image was written; it does not prove that the TUI looks correct. If `freeze` is
-unavailable, skip the raster screenshot and continue with fresh `read`, `cell`,
-`region`, and `diff` evidence as appropriate.
+JSON presentation options have a separate coordinate system:
 
-7. Stop the session when done.
+- `--lines` and `--cols` crop **one-based ranges within the captured result**.
+- `--number-lines` and `--ruler` add targeting aids to `display_text`.
+- `--repr` exposes control characters; `--tokens` includes parsed tokens.
+- `text` reflects native flags unless an explicit JSON crop is requested.
+- `-p` cannot be combined with those JSON presentation options.
+
+Mouse, cell, region, and text-match coordinates are also one-based. The top-left
+visible cell is row 1, column 1. History shifts coordinates within inspection
+captures; use a fresh visible capture when targeting live input.
 
 ```bash
-python3 "$HARNESS" stop SESSION
+python3 "$HARNESS" capture-pane -t PANE --lines 15:17 --cols 1:60 --number-lines --ruler
+python3 "$HARNESS" find-text -t PANE --text "main ↑1"
+python3 "$HARNESS" mouse click -t PANE --text "main ↑1" --anchor center
+python3 "$HARNESS" cell -t PANE --row 16 --col 6
+python3 "$HARNESS" region -t PANE --rows 15:17 --cols 1:40 --styles --plain
 ```
 
-## What The Harness Returns
+## Synchronization, styles, and snapshots
 
-- `read` returns the rendered pane contents, not a screenshot and not a raw PTY transcript.
-- `screenshot` captures the current pane with ANSI styles and preserved trailing
-  spaces, then pipes it through `freeze_exec.sh` to run
-  `freeze --language ansi -c terminal` and produce a PNG.
-- `read` preserves ANSI escape codes by default so color and style state remain visible.
-- Use `--plain` when you want stripped text that is easier to reason over.
-- `read --lines`, `read --cols`, `--number-lines`, and `--ruler` help isolate and target specific cells.
-- `read --repr` exposes control characters and ANSI escapes as visible text like `\x1b[44m`.
-- `read --tokens` returns parsed text and ANSI tokens for the extracted region.
-- `cell` returns the exact character and style state at one `row,col`, including `resolved_bg` and `resolved_fg`.
-- `region --styles` returns a cropped block plus per-cell style objects.
-- `find-text` returns row and column spans for matching text, which is useful before text-anchored mouse actions.
-- `snapshot` saves the current screen for later comparison.
-- `diff` compares snapshots or a snapshot against the current screen and supports `--style-only`.
-- `info` returns pane metadata such as `width`, `height`, `pid`, `command`, `alive`, `dead`, cursor fields, pane mode, and tmux mouse flags.
-- When the pane is dead, `info`, `read`, and `wait` include `exit_status` and `exit_signal` when tmux provides them.
+Use `wait --mode stable` after startup/input. `--mode change` compares against
+the capture taken when waiting begins; it cannot detect a redraw that already
+happened. The same timing constraint applies to `--require-change`. This screen
+wait is a harness extension, not tmux's channel-based `wait-for`.
 
-## Raster Screenshots
+Inspect styles with `cell` or `region --styles`; check resolved foreground and
+background values when reverse-video or selection matters. Regions and diff
+previews preserve ANSI by default and accept `--plain`. Snapshots always preserve
+styles independently of text presentation.
 
-Use the `screenshot` command when `freeze` is installed and available on `PATH`.
-If it is unavailable, proceed without raster screenshots; do not block the task
-on installing it. Use fresh text captures and fine-grained style inspection
-instead, and mention the missing raster validation when visual appearance is
-material to the result.
-
-The harness automatically invokes the bundled `freeze_exec.sh` helper. The
-helper resolves `freeze` from `PATH`, adds the explicit `--language ansi` needed
-when rendering an ANSI pane capture from standard input, and forwards all other
-arguments unchanged. This avoids `Language Unknown; specify a language with
---language` failures from Freeze versions that do not infer ANSI input.
-
-Render the visible pane using the `terminal` freeze template and automatic
-rasterizer selection:
+Snapshots are scoped to the resolved server instance and pane. Equivalent target
+spellings access the same snapshots; other panes, servers, and restarted servers
+cannot reuse them. Retake snapshots created under the previous CLI.
 
 ```bash
-python3 "$HARNESS" screenshot SESSION --output /absolute/path/pane.png
+python3 "$HARNESS" snapshot -t PANE --name before
+python3 "$HARNESS" mouse click -t PANE --text "main ↑1" --anchor center
+python3 "$HARNESS" snapshot -t PANE --name after
+python3 "$HARNESS" diff -t PANE --before before --after after --style-only --lines 15:17 --cols 1:40 --repr
 ```
 
-To render an already captured ANSI file directly, use the same helper:
+Mouse commands emit SGR sequences; verify the app enables mouse reporting first.
+`click` emits press/release, `scroll` emits wheel events, and `drag` emits
+press/motion/release. Prefer text anchors and re-capture after input.
+
+## Raster screenshots
+
+When `freeze` is available on PATH, render and **open** a fresh PNG after each
+feature or significant TUI code change. Writing an image alone does not validate
+appearance. Repeat more often when iterating on layout, colors, glyphs, or spacing.
+If Freeze is unavailable, continue with fresh text/style evidence and mention
+missing raster validation when it matters; installation is not a prerequisite.
 
 ```bash
-"$FREEZE_EXEC" -c terminal --rasterizer auto \
-  -o /absolute/path/pane.png < /absolute/path/pane.ansi
+python3 "$HARNESS" screenshot -t PANE --output /absolute/path/pane.png
+python3 "$HARNESS" screenshot -t PANE --output /absolute/path/pane.png --rasterizer chromium --scale 2
+python3 "$HARNESS" screenshot -t PANE --output /absolute/path/pane.png --rasterizer rsvg-pdf
 ```
 
-The helper normally finds `freeze` with `which`. To select a particular
-installation, set `FREEZE_BIN` to its executable path:
+The harness captures ANSI with physical rows and trailing spaces preserved,
+then uses `freeze_exec.sh` to select ANSI stdin explicitly. `rsvg-pdf` preserves
+color emoji and requires `rsvg-convert` and `pdftocairo`. Use `--freeze-config NAME`
+for another template. JSON includes the absolute PNG path and renderer details.
+
+To render an existing ANSI capture:
 
 ```bash
-FREEZE_BIN=/absolute/path/to/freeze \
-  "$FREEZE_EXEC" -c terminal -o /absolute/path/pane.png \
-  < /absolute/path/pane.ansi
+"$FREEZE_EXEC" -c terminal --rasterizer auto -o /absolute/path/pane.png < /absolute/path/pane.ansi
 ```
 
-Select a rasterizer or output scale when needed:
+Set `FREEZE_BIN=/absolute/path/to/freeze` to select a particular installation.
+Otherwise the helper resolves Freeze from PATH.
 
-```bash
-python3 "$HARNESS" screenshot SESSION \
-  --output /absolute/path/pane.png \
-  --rasterizer chromium \
-  --scale 2
-```
+## Exit inspection and cleanup
 
-Freeze's `rsvg-pdf` rasterizer preserves color emoji through librsvg's PDF
-rendering path. It requires both `rsvg-convert` and `pdftocairo` on `PATH`:
-
-```bash
-python3 "$HARNESS" screenshot SESSION \
-  --output /absolute/path/pane.png \
-  --rasterizer rsvg-pdf
-```
-
-Use `--freeze-config NAME` to select another freeze configuration. Use
-`--history N` or `--full-history` only when the image should include scrollback;
-the default captures the visible pane. Output must be a `.png` file. The JSON
-result includes `screenshot_path`, `freeze_path`, `freeze_config`, and
-`rasterizer`.
-
-When `freeze` is available, retake a screenshot after each feature or significant
-code change during a TUI task and visually examine the newly rendered image at
-least once. Do not reuse a pre-change screenshot as visual evidence. Visually
-sensitive tasks may render and inspect screenshots more often, such as after each
-meaningful layout, color, spacing, glyph, or interaction-state iteration. When
-`freeze` is unavailable, continue with newly captured text and style evidence.
-
-## Fine-Grained Inspection Workflow
-
-Use this order when you need exact style or selection-state evidence:
-
-1. Use `read --plain --number-lines --ruler` to map the screen.
-2. Use `find-text` when a stable text anchor exists.
-3. Use `cell` or `region --styles` to inspect resolved colors or other style flags.
-4. Save a `snapshot` before the interaction.
-5. Interact with keyboard or mouse.
-6. Save another `snapshot`.
-7. Run `diff --style-only --repr` to isolate style-only changes such as selected-row backgrounds.
-
-Example:
-
-```bash
-python3 "$HARNESS" snapshot SESSION --name before
-python3 "$HARNESS" mouse click SESSION --text "main ↑1" --anchor center
-python3 "$HARNESS" snapshot SESSION --name after
-python3 "$HARNESS" diff SESSION --before before --after after --style-only --lines 15:17 --cols 1:40 --repr
-python3 "$HARNESS" cell SESSION --row 16 --col 6
-```
-
-## Mouse Input Model
-
-- Mouse coordinates are 1-based pane coordinates: `row=1 col=1` is the top-left cell of the visible pane.
-- The harness emits SGR mouse-reporting sequences, which modern TUIs commonly use.
-- Use mouse commands only when the app has enabled terminal mouse support. Otherwise the app may ignore the events or interpret them as plain escape sequences.
-- Re-read the screen after mouse input the same way you would after keyboard input.
-- Use `find-text` or `read --plain --number-lines --ruler` before coordinate-based mouse input.
-- Use text-targeted mouse input when a stable string exists instead of guessing columns.
-
-## Command Notes
-
-- `start`: Prefer a fixed size such as `120x40` so captures are repeatable. Always pass `--cwd` for the correct project root.
-- `wait`: Use `--mode stable` after startup or after input. Use `--mode change` only when you want to detect any redraw relative to the capture taken at the start of `wait`.
-- `wait --require-change`: Use only when a redraw is expected after the `wait` call begins. It will time out if the redraw already happened.
-- `read`: Use `--history 200` to include recent scrollback. Use `--full-history` when the visible pane is insufficient.
-- `read --lines 10:20 --cols 1:80`: Crop to the rows and columns you actually care about.
-- `read --number-lines --ruler`: Best option when you are choosing exact `row,col` targets.
-- `read --repr`: Best option when you need to inspect ANSI or control codes directly.
-- `read --tokens`: Best option when you need a structured token stream instead of manual ANSI parsing.
-- `screenshot`: When `freeze` is on `PATH`, render a PNG for visual inspection;
-  the harness uses `freeze_exec.sh` to identify stdin as ANSI. Use an absolute
-  `--output` path so the artifact is unambiguous. Otherwise skip this command and
-  continue with text and style inspection.
-- `cell`: Best option for one exact coordinate. Look at `resolved_bg` and `resolved_fg` when selection or focus is color-driven.
-- `region --styles`: Best option when a whole row or pane header may have style changes.
-- `find-text --text "...":` Use before text-targeted mouse input or when you need exact spans for a selected label.
-- `mouse click`: Send a press and release at a single `row,col`, or use `--text "..." --anchor start|center|end`.
-- `mouse scroll`: Send wheel events at a single `row,col`, or use `--text "..."` to scroll over a matched label or pane.
-- `mouse drag`: Send press, motion, and release events from start to end coordinates. You can also use `--start-text` and `--end-text`.
-- `snapshot`: Save a named screen state under the current session so `diff` can compare it later.
-- `diff`: Compare named snapshots, or compare a named snapshot to the current screen by omitting `--after`.
-- `diff --style-only`: Use when the text is unchanged but the style changed, such as focus borders or selected-row backgrounds.
-- `resize`: Use only when layout coverage matters. Re-read after resizing because wrapping and pane balance will change.
-- `stop`: Stop the session in the same turn unless the user explicitly wants it left running.
-- `sessions`: List sessions on the current socket. On the private server these are all yours; under `--shared` they are the user's — read-only intent.
-- `kill-server`: Tear down the entire tmux server on the current socket. Safe and normal on the private server (recreated on next `start`); refused under `--shared` without `--i-am-sure`.
-- `--shared` / `--socket LABEL`: Global flags placed BEFORE the subcommand. `--shared` targets the user's default tmux server (guest rules apply — see Server Isolation); `--socket` selects a named private server.
-
-## Examples
-
-### Cropped Read With Ruler
-
-```bash
-python3 "$HARNESS" read SESSION --plain --lines 15:17 --cols 1:60 --number-lines --ruler
-```
-
-### Find Text Then Click It
-
-```bash
-python3 "$HARNESS" find-text SESSION --text "main ↑1"
-python3 "$HARNESS" mouse click SESSION --text "main ↑1" --anchor center
-```
-
-### Inspect Selected-Row Background
-
-```bash
-python3 "$HARNESS" cell SESSION --row 16 --col 6
-python3 "$HARNESS" region SESSION --rows 15:17 --cols 1:40 --styles --plain
-```
-
-### Compare Before/After Style State
-
-```bash
-python3 "$HARNESS" snapshot SESSION --name before
-python3 "$HARNESS" send SESSION --literal 3
-python3 "$HARNESS" snapshot SESSION --name after
-python3 "$HARNESS" diff SESSION --before before --after after --style-only --repr
-```
-
-### Render And Inspect A Raster Screenshot
-
-Run this only when `freeze` is available:
-
-```bash
-python3 "$HARNESS" screenshot SESSION --output /absolute/path/pane.png
-```
-
-Open the PNG with the available image-inspection tool and examine the actual
-render. Retake and re-examine it after the next feature or significant code
-change; visually sensitive work may require this after every iteration.
-
-## Crash And Exit Handling
-
-- The harness enables tmux `remain-on-exit`, so dead panes stay readable.
-- After a crash or normal exit, call `info` first to confirm `alive: false`.
-- Inspect `exit_status` and `exit_signal` instead of scraping only the `Pane is dead ...` footer text.
-- Use `read --history 200` after exit to capture the final screen, panic, traceback, or stderr output.
-- Stop the dead session after inspection so stale sessions do not accumulate.
-
-## Failure Triage
-
-- If the app appears not to react to keys, verify the expected focus before changing code.
-- If the app appears not to react to mouse input, verify the app actually enables mouse mode.
-- Call `info` to confirm the process is still alive, whether the pane is in tmux mode, and what cursor position tmux is reporting.
-- Call `read --history 200` before restarting; the useful failure output is often just above the visible screen.
-- Switch to `--plain` if ANSI-heavy output is making the capture hard to read.
-- Switch to `--repr` when you need to inspect style codes directly.
-- Use `find-text` before coordinate-based clicks if the screen content is still moving.
-- Restart with a fixed size if the app layout depends on terminal dimensions.
-- Confirm `--cwd` is correct before assuming the app itself is broken.
-- If `screenshot` reports that `freeze` is unavailable, proceed without it. Use
-  fresh text and style captures for the remaining inspection, and report the
-  raster-validation limitation only when it matters to the result.
-
-## Operating Rules
-
-- Prefer the bundled harness over raw `tmux` subcommands. Raw `tmux` (no `-L`) hits the user's default server and can disrupt their session; the harness defaults to a private server for this reason.
-- Stay on the private server unless the user asks you to look at their real tmux. Only then use `--shared`, as a guest (confirm first; no server-wide destructive actions).
-- Prefer the default ANSI capture first. Use `--plain` only when you specifically want stripped text.
-- Use `cell`, `region`, and `diff --style-only` for exact selection-state evidence;
-  complement them with `screenshot` when visual appearance matters.
-- After each feature or significant code change during a TUI task, retake and
-  visually re-examine at least one screenshot when `freeze` is available.
-  Otherwise proceed with fresh text and style captures. Visually sensitive tasks
-  may use screenshots more often.
-- Keep one TUI per tmux session.
-- Use fixed dimensions during debugging so diffs are meaningful.
+- After a crash or exit, use `info -t PANE` to inspect `alive`, `exit_status`,
+  and `exit_signal`, then `capture-pane -t PANE -S -200` for final output.
+- Inspect focus, pane mode, and mouse flags before assuming input is broken.
+- Capture failure output before restarting; verify `new-session -c` points at
+  the correct project and keep dimensions fixed when comparing screens.
+- Stop sessions in the same turn unless the user asks to keep them. Use
+  `kill-session -t SESSION --ignore-missing` for stale-session cleanup.
+- Prefer one TUI per session; use pane IDs when inspecting multiple panes.
+  `list-sessions` and `kill-server` apply to the selected server only.
 
 ## Resources
 
-### scripts/
-
-- `tmux_tui_harness.py`: JSON CLI wrapper around `tmux` for launching, inspecting, targeting, snapshotting, raster screenshotting, and diffing interactive terminal apps.
-- `freeze_exec.sh`: Resolve and execute Freeze with ANSI stdin explicitly selected while forwarding the harness's rendering arguments.
-- `test_tmux_tui_harness.py`: Unit coverage for the raster screenshot command and its dependency/error contracts.
+- `scripts/tmux_tui_harness.py`: tmux-aligned CLI with JSON inspection and raw capture.
+- `scripts/freeze_exec.sh`: ANSI stdin rendering helper.
+- `scripts/test_tmux_tui_harness.py`: CLI, capture, target, lifecycle, snapshot,
+  and screenshot coverage, including isolated tmux fixtures. Run with
+  `uv run --no-project scripts/test_tmux_tui_harness.py`.
